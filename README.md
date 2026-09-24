@@ -53,6 +53,9 @@ uv sync --extra gui          # add --extra build for PyInstaller
 
 > On a slow connection uv's 30 s HTTP timeout can be too tight:
 > `UV_HTTP_TIMEOUT=300 uv sync --extra gui`.
+>
+> `uv run` re-syncs to the default set, so pass `--extra gui` on any command
+> that needs PyQt5. The `scripts/run_gui.sh` helper does this for you.
 
 Run a relay:
 
@@ -119,7 +122,7 @@ operations.
 ## Testing
 
 ```bash
-uv run pytest
+uv run --extra gui pytest
 # or, to mirror CI exactly:
 QT_QPA_PLATFORM=offscreen NK_DISABLE_KEYRING=1 uv run --no-sync pytest
 ```
