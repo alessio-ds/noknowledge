@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+*.spec.bak
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime data (never commit identities or mail)
+data/
+*.db
+*.db-wal
+*.db-shm
+relay_data/
+
+# OS
+.DS_Store

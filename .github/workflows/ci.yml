@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest        # macOS 26 arm64
+          - macos-26-intel      # macOS 26 x86_64
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,gui]"
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+
+  test-fedora:
+    name: test fedora (${{ matrix.fedora }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: ["fedora:latest", "fedora:41"]
+    container: ${{ matrix.fedora }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system libraries
+        run: |
+          dnf install -y python3 python3-pip mesa-libGL libxkbcommon libxkbcommon-x11 which gcc
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e ".[dev,gui]"
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python3 -m pytest -q
+
+  lint:
+    name: syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Byte-compile every module
+        run: python -m compileall -q noknowledge nk_gui.py nk_server.py scripts
+      - name: Verify no legacy stack remains
+        run: |
+          if ls src-tauri package.json vite.config.js 2>/dev/null; then
+            echo "::error::Rust/Node tooling must not exist in this repository"; exit 1
+          fi
