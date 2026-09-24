@@ -14,15 +14,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[gui]" pyinstaller
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install from the lockfile
+        run: uv sync --extra gui --extra build --python 3.13
       - name: Build
-        run: python scripts/build.py --all
+        run: uv run --no-sync python scripts/build.py --all
       - name: Smoke-test the server binary
-        run: |
-          ./dist/nk-server --help
+        run: ./dist/nk-server --help
       - uses: actions/upload-artifact@v4
         with:
           name: noknowledge-linux-x86_64
@@ -35,15 +35,17 @@ jobs:
     container: fedora:latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install system dependencies
+      - name: Install Qt system libraries
         run: |
-          dnf install -y python3 python3-pip mesa-libGL libxkbcommon libxkbcommon-x11 which
-      - name: Install Python dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install ".[gui]" pyinstaller
+          dnf install -y mesa-libGL libxkbcommon libxkbcommon-x11
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - name: Install from the lockfile
+        run: uv sync --extra gui --extra build
       - name: Build
-        run: python3 scripts/build.py --all
+        run: uv run --no-sync python scripts/build.py --all
       - name: Smoke-test the server binary
         run: ./dist/nk-server --help
       - uses: actions/upload-artifact@v4
@@ -60,12 +62,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[gui]" pyinstaller
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install from the lockfile
+        run: uv sync --extra gui --extra build --python 3.13
       - name: Build
-        run: python scripts/build.py --all
+        run: uv run --no-sync python scripts/build.py --all
       - name: Smoke-test the server binary
         run: .\dist\nk-server.exe --help
       - uses: actions/upload-artifact@v4
@@ -82,12 +85,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[gui]" pyinstaller
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install from the lockfile
+        run: uv sync --extra gui --extra build --python 3.13
       - name: Build
-        run: python scripts/build.py --all
+        run: uv run --no-sync python scripts/build.py --all
       - name: Smoke-test the server binary
         run: ./dist/nk-server --help
       - uses: actions/upload-artifact@v4
@@ -107,14 +111,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
       - name: Confirm we are on Intel
         run: python -c "import platform; assert platform.machine() == 'x86_64', platform.machine()"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[gui]" pyinstaller
+      - name: Install from the lockfile
+        run: uv sync --extra gui --extra build --python 3.13
       - name: Build
-        run: python scripts/build.py --all
+        run: uv run --no-sync python scripts/build.py --all
       - name: Smoke-test the server binary
         run: ./dist/nk-server --help
       - uses: actions/upload-artifact@v4

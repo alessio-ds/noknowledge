@@ -2,6 +2,10 @@ import os
 
 import pytest
 
+# Tests must be deterministic and must never touch a developer's real OS
+# keyring: force the 0600 key-file fallback for the whole suite.
+os.environ.setdefault("NK_DISABLE_KEYRING", "1")
+
 from noknowledge.core.client import Client
 from noknowledge.core.store import LocalStore
 from noknowledge.crypto.identity import Identity

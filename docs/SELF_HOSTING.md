@@ -10,11 +10,15 @@ federated node**, and no relay trusts or coordinates with any other.
 
 ```bash
 git clone <your-fork> noknowledge && cd noknowledge
-uv venv --python 3.13
-uv pip install -e ".[gui]"
+uv sync --frozen --extra gui
 
 ./scripts/run_server.sh --host 0.0.0.0 --port 8000 --data-dir /var/lib/noknowledge
 ```
+
+`uv sync --frozen` installs exactly the pinned versions from `uv.lock` — use it
+on servers so a deployment is reproducible. `uv sync --extra gui` is only needed
+if you also run the desktop client on this machine; a relay needs no extras
+beyond the base dependencies.
 
 The relay listens on `http://127.0.0.1:8000` by default. Check it:
 
@@ -55,7 +59,7 @@ WorkingDirectory=/opt/noknowledge
 Environment=NK_HOST=127.0.0.1
 Environment=NK_PORT=8000
 Environment=NK_DATA_DIR=/var/lib/noknowledge
-ExecStart=/opt/noknowledge/.venv/bin/python -m noknowledge.server
+ExecStart=/opt/noknowledge/.venv/bin/nk-server
 Restart=on-failure
 # Harden the service: it needs nothing but its data directory.
 NoNewPrivileges=true

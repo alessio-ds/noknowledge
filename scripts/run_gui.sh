@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# Launch the desktop client. Set NK_DATA_DIR to run isolated instances, e.g.
-#   NK_DATA_DIR=/tmp/alice ./scripts/run_gui.sh
+# Launch the desktop client.
+#
+#   ./scripts/run_gui.sh
+#   NK_DATA_DIR=/tmp/alice ./scripts/run_gui.sh    # isolated instance
+#
+# Uses uv when available; `--extra gui` makes sure PyQt5 is installed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [ -x .venv/bin/python ]; then
-  PY=.venv/bin/python
-else
-  PY=python3
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --extra gui nk-gui "$@"
 fi
 
-exec "$PY" -m noknowledge.gui "$@"
+if [ -x .venv/bin/python ]; then
+  exec .venv/bin/python -m noknowledge.gui "$@"
+fi
+
+exec python3 -m noknowledge.gui "$@"

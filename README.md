@@ -44,25 +44,44 @@ mnemonic) from **address** (a secret capability):
 
 ## Install and run
 
+The project is managed with [uv](https://docs.astral.sh/uv/). One command creates
+the environment from `uv.lock`:
+
 ```bash
-uv venv --python 3.13
-uv pip install -e ".[dev,gui]"
+uv sync --extra gui          # add --extra build for PyInstaller
 ```
+
+> On a slow connection uv's 30 s HTTP timeout can be too tight:
+> `UV_HTTP_TIMEOUT=300 uv sync --extra gui`.
 
 Run a relay:
 
 ```bash
-python -m noknowledge.server --host 127.0.0.1 --port 8000 --data-dir ./relay_data
+uv run nk-server --host 127.0.0.1 --port 8000 --data-dir ./relay_data
 # or: ./scripts/run_server.sh
 ```
 
 Run the desktop client:
 
 ```bash
-python -m noknowledge.gui
+uv run nk-gui
 # or: ./scripts/run_gui.sh
 #     NK_DATA_DIR=/tmp/alice ./scripts/run_gui.sh   # isolated instance
 ```
+
+Everything can also be run as a module, which is what the frozen binaries do:
+
+```bash
+uv run python -m noknowledge.server --host 127.0.0.1 --port 8000
+uv run python -m noknowledge.gui
+```
+
+### Local key storage
+
+The local database key is kept in the **OS keyring** by default. On headless
+machines, in containers, or in CI — where no keyring exists — set
+`NK_DISABLE_KEYRING=1` to use a `0600` key file in the data directory instead.
+Either way, message bodies and ratchet state are encrypted at rest.
 
 Use the library directly:
 
@@ -100,7 +119,9 @@ operations.
 ## Testing
 
 ```bash
-QT_QPA_PLATFORM=offscreen python -m pytest -q
+uv run pytest
+# or, to mirror CI exactly:
+QT_QPA_PLATFORM=offscreen NK_DISABLE_KEYRING=1 uv run --no-sync pytest
 ```
 
 The suite covers the crypto core (including known-answer vectors for HKDF,
@@ -112,7 +133,8 @@ relay is killed mid-conversation.
 ## Building standalone binaries
 
 ```bash
-python scripts/build.py --all      # -> dist/nk-gui, dist/nk-server
+uv sync --extra gui --extra build
+uv run --no-sync python scripts/build.py --all   # -> dist/nk-gui, dist/nk-server
 ```
 
 `.github/workflows/build.yml` builds these on Windows, Ubuntu, Fedora and macOS
@@ -133,7 +155,9 @@ noknowledge/
   server/   FastAPI relay (mailboxes, prekeys, blobs)
   gui/      PyQt5 desktop client
 tests/      crypto, server, end-to-end, failover, hardening and GUI tests
+scripts/    run_server.sh, run_gui.sh, build.py, wipe.sh
 docs/       self-hosting and operations
+uv.lock     pinned, reproducible environment
 ```
 
 ## Documentation

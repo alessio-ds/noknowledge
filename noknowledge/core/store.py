@@ -20,6 +20,10 @@ from noknowledge.crypto.encoding import b64d, b64e
 LOCAL_KEY_SIZE = 32
 KEYRING_SERVICE = "noknowledge"
 
+#: Set ``NK_DISABLE_KEYRING=1`` to always use the 0600 key file. Useful for
+#: headless servers, containers and CI where no OS keyring exists.
+DISABLE_KEYRING_ENV = "NK_DISABLE_KEYRING"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS identities (
     id          TEXT PRIMARY KEY,
@@ -103,19 +107,24 @@ def derive_key_from_passphrase(passphrase: str, salt: bytes, iterations: int = 6
 def resolve_store_key(
     directory: str, identity_id: str, passphrase: str | None = None
 ) -> bytes:
-    """Obtain the local storage key: keyring, then passphrase, then key file."""
-    os.makedirs(directory, exist_ok=True)
-    try:
-        import keyring  # type: ignore
+    """Obtain the local storage key.
 
-        stored = keyring.get_password(KEYRING_SERVICE, identity_id)
-        if stored:
-            return b64d(stored)
-        key = os.urandom(LOCAL_KEY_SIZE)
-        keyring.set_password(KEYRING_SERVICE, identity_id, b64e(key))
-        return key
-    except Exception:
-        pass
+    Preference order: OS keyring, then a 0600 key file (optionally wrapped with
+    a passphrase). Set ``NK_DISABLE_KEYRING=1`` to skip the keyring entirely.
+    """
+    os.makedirs(directory, exist_ok=True)
+    if not os.environ.get(DISABLE_KEYRING_ENV):
+        try:
+            import keyring  # type: ignore
+
+            stored = keyring.get_password(KEYRING_SERVICE, identity_id)
+            if stored:
+                return b64d(stored)
+            key = os.urandom(LOCAL_KEY_SIZE)
+            keyring.set_password(KEYRING_SERVICE, identity_id, b64e(key))
+            return key
+        except Exception:
+            pass
 
     path = os.path.join(directory, "local.key")
     if os.path.exists(path):
