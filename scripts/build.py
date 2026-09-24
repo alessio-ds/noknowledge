@@ -44,10 +44,18 @@ def build(entry: str, name: str, windowed: bool, onefile: bool = True) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--only", choices=["gui", "server", "all"], default="all")
+    parser.add_argument(
+        "--all",
+        dest="build_all",
+        action="store_true",
+        help="build both the GUI and the relay (the default)",
+    )
     parser.add_argument("--name-suffix", default="")
     parser.add_argument("--onedir", action="store_true", help="build a folder instead of one file")
     args = parser.parse_args(argv)
     onefile = not args.onedir
+    if args.build_all:
+        args.only = "all"
 
     os.makedirs("dist", exist_ok=True)
     if args.only in ("gui", "all"):

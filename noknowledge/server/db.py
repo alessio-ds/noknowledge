@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS mailboxes (
     created_at        INTEGER NOT NULL,
     last_seen         INTEGER NOT NULL,
     max_messages      INTEGER NOT NULL,
-    max_bytes         INTEGER NOT NULL
+    max_bytes         INTEGER NOT NULL,
+    next_seq          INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -175,7 +176,7 @@ class Database:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             mailbox = connection.execute(
-                "SELECT max_messages, max_bytes FROM mailboxes WHERE id = ?",
+                "SELECT max_messages, max_bytes, next_seq FROM mailboxes WHERE id = ?",
                 (mailbox_id,),
             ).fetchone()
             if mailbox is None:
@@ -183,13 +184,9 @@ class Database:
             count, used = self.usage(connection, mailbox_id)
             if count >= mailbox["max_messages"] or used + size > mailbox["max_bytes"]:
                 raise QuotaExceeded(mailbox_id)
-            seq = (
-                connection.execute(
-                    "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE mailbox_id = ?",
-                    (mailbox_id,),
-                ).fetchone()[0]
-                + 1
-            )
+            # Sequence numbers are monotonic for the lifetime of the mailbox, so
+            # an ack can never delete a message that was written after it.
+            seq = int(mailbox["next_seq"])
             connection.execute(
                 """
                 INSERT INTO messages (mailbox_id, seq, ciphertext, created_at, size)
@@ -198,9 +195,10 @@ class Database:
                 (mailbox_id, seq, sqlite3.Binary(ciphertext), now, size),
             )
             connection.execute(
-                "UPDATE mailboxes SET last_seen = ? WHERE id = ?", (now, mailbox_id)
+                "UPDATE mailboxes SET last_seen = ?, next_seq = ? WHERE id = ?",
+                (now, seq + 1, mailbox_id),
             )
-            return int(seq)
+            return seq
 
     def get_messages(
         self, mailbox_id: str, after_seq: int = 0, limit: int = 200

@@ -4,6 +4,11 @@ Full rewrite of `Documents/pyzk` as a **pure-Python** zero-knowledge messenger.
 No Rust, no Tauri, no Node/Svelte, no sidecar RPC. Server (FastAPI) and client
 (PyQt5 GUI + core library) are both Python.
 
+> **Status:** implemented. Phases 0–7 are complete; the test suite covers the
+> crypto core, the relay API, end-to-end exchange over real HTTP relays, relay
+> failover, hardening/fuzzing and the GUI. See `README.md` for usage and
+> `docs/SELF_HOSTING.md` for federation.
+
 Reference implementation for study only: `/Users/alessiodellasanta/Documents/pyzk`.
 
 ---

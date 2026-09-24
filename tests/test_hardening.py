@@ -219,6 +219,20 @@ def test_database_ack_is_exactly_bounded(tmp_path):
     assert [row["seq"] for row in database.get_messages("m1", 0, 100)] == [4, 5]
 
 
+def test_sequences_never_restart_after_ack(tmp_path):
+    """A stale ack must not be able to delete a newly written message."""
+    database = Database(str(tmp_path / "seq.db"))
+    database.initialize()
+    database.create_mailbox(
+        "m1", token_hash(b"r" * 32), token_hash(b"w" * 32), 0, 100, 10**9
+    )
+    assert database.put_message("m1", b"a", 0) == 1
+    assert database.put_message("m1", b"b", 0) == 2
+    database.ack_messages("m1", 2)
+    assert database.put_message("m1", b"c", 0) == 3
+    assert [row["seq"] for row in database.get_messages("m1", 0, 100)] == [3]
+
+
 def test_database_quota_counts_messages_and_blobs(tmp_path):
     database = Database(str(tmp_path / "quota.db"))
     database.initialize()

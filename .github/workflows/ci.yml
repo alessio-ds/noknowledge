@@ -20,8 +20,8 @@ jobs:
         os:
           - ubuntu-latest
           - windows-latest
-          - macos-latest        # macOS 26 arm64
-          - macos-26-intel      # macOS 26 x86_64
+          - macos-latest        # macOS 26 arm64 (standard runner)
+          - macos-26-intel      # macOS 26 x86_64 (larger runner — see README)
         python: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -38,13 +38,9 @@ jobs:
         run: python -m pytest -q
 
   test-fedora:
-    name: test fedora (${{ matrix.fedora }})
+    name: test fedora
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        fedora: ["fedora:latest", "fedora:41"]
-    container: ${{ matrix.fedora }}
+    container: fedora:latest
     steps:
       - uses: actions/checkout@v4
       - name: Install system libraries

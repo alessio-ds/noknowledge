@@ -118,6 +118,11 @@ python scripts/build.py --all      # -> dist/nk-gui, dist/nk-server
 `.github/workflows/build.yml` builds these on Windows, Ubuntu, Fedora and macOS
 (`macos-latest` arm64 and `macos-26-intel` x86_64).
 
+> `macos-26-intel` (and every Intel macOS image) is a **larger runner** label,
+> which requires a paid GitHub plan. Without larger-runner access, remove that
+> job or point it at a self-hosted Intel macOS runner. The `macos-latest` job
+> covers Apple Silicon.
+
 ## Project layout
 
 ```
