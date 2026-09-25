@@ -124,6 +124,12 @@ class SettingsDialog(QDialog):
         self.fail_closed.setChecked(settings.fail_closed or settings.proxy_enabled)
         layout.addWidget(self.fail_closed)
 
+        self.auto_discover = QCheckBox(
+            "Automatically discover new relays advertised by my relays"
+        )
+        self.auto_discover.setChecked(settings.auto_discover)
+        layout.addWidget(self.auto_discover)
+
         layout.addWidget(QLabel("Poll interval (seconds)"))
         self.poll = QSpinBox()
         self.poll.setRange(1, 60)
@@ -141,6 +147,7 @@ class SettingsDialog(QDialog):
         settings.proxy_enabled = self.proxy_enabled.isChecked()
         settings.proxy_url = self.proxy_url.text().strip()
         settings.fail_closed = self.fail_closed.isChecked()
+        settings.auto_discover = self.auto_discover.isChecked()
         settings.poll_seconds = self.poll.value()
         return settings
 
@@ -512,11 +519,17 @@ class App(QWidget):
         if self.worker is not None:
             self.worker.stop()
             self.worker.wait(3000)
-        self.worker = Worker(self.client, self.settings.poll_seconds)
+        self.worker = Worker(
+            self.client,
+            self.settings.poll_seconds,
+            auto_discover=self.settings.auto_discover,
+            discovery_interval=self.settings.discovery_interval,
+        )
         self.worker.messages_received.connect(self._on_messages)
         self.worker.status_changed.connect(self.main_screen.set_status)
         self.worker.error_occurred.connect(self._on_error)
         self.worker.task_finished.connect(lambda *_: self.refresh())
+        self.worker.relays_changed.connect(self._on_relays_changed)
         self.worker.submit("provision", self.client.provision)
         self.worker.start()
 
@@ -714,6 +727,15 @@ class App(QWidget):
 
     def _on_messages(self, _messages: list) -> None:
         self.refresh()
+
+    def _on_relays_changed(self, relays: list) -> None:
+        """Discovery adopted new relays: persist them for the next launch."""
+        relays = [str(relay) for relay in relays]
+        if not relays or relays == self.settings.relays:
+            return
+        self.settings.relays = relays
+        self.settings.save(self.directory)
+        self.main_screen.set_status(f"online · {len(relays)} relays")
 
     def _on_error(self, message: str) -> None:
         self.main_screen.set_status(f"offline: {message[:60]}")

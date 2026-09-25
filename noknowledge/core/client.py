@@ -169,6 +169,59 @@ class Client:
         )
         self.backend.publish_bundle(self._bundle_id, bundle.to_bytes())
 
+    # -- relay set --------------------------------------------------------
+
+    def relay_urls(self) -> list[str]:
+        """The relays this identity uses, and advertises in its contact card."""
+        return list(self.relays)
+
+    def discover_relays(self, **kwargs) -> list[str]:
+        """Relays we would use if we adopted everything advertised and alive.
+
+        Read-only: nothing is changed until :meth:`refresh_relays` is called.
+        """
+        from noknowledge.wire.discovery import discover_relays
+
+        return discover_relays(self.relays, self.backend.transport, **kwargs)
+
+    def refresh_relays(self, **kwargs) -> list[str]:
+        """Discover relays and adopt any newly reachable ones.
+
+        Our mailbox is registered on the added relays and the prekey bundle
+        republished there, and the contact card is rebuilt so new contacts are
+        told about the wider set. Nothing is ever removed.
+        """
+        discovered = self.discover_relays(**kwargs)
+        if discovered != self.relays:
+            self._apply_relays(discovered)
+        return list(self.relays)
+
+    def _apply_relays(self, relays: list[str]) -> None:
+        urls = normalize_relay_urls(list(relays))
+        if not urls or urls == self.relays:
+            return
+        previous = self.backend
+        self.relays = urls
+        # Reuse the transport: peer backends share it, so it must stay open.
+        self.backend = MultiRelayBackend(urls, transport=previous.transport)
+        previous.shutdown()
+
+        if self._own_inbox is not None:
+            try:
+                self.backend.register_mailbox(self._own_inbox)
+            except Exception:
+                pass
+            try:
+                prekeys = self.store.load_prekeys(self.identity_id)
+                if prekeys:
+                    self._publish_bundle(prekeys)
+            except Exception:
+                pass
+        if self._card is not None and self._own_inbox is not None and self._bundle_id:
+            self._card = ContactCard.create(
+                self.identity, self._bundle_id, self._own_inbox, self.relays, self.name
+            )
+
     # -- contacts ---------------------------------------------------------
 
     def add_contact(self, card_string: str, nickname: str | None = None) -> dict:

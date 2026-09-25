@@ -40,10 +40,48 @@ Environment variables (or CLI flags):
 | `NK_BLOB_TTL` | `2592000` (30 d) | delete orphan blobs older than this |
 | `NK_REQUIRE_HASHCASH` | off | require proof-of-work on mailbox/prekey creation |
 | `NK_HASHCASH_BITS` | `20` | difficulty when enabled |
+| `NK_ADVERTISE_URL` | *(empty)* | this relay's public URL, published for discovery |
+| `NK_KNOWN_RELAYS` | *(empty)* | comma-separated peers to advertise |
 
 Per-mailbox message/byte quotas, rate limits and maximum message sizes live in
 `noknowledge/server/config.py` (`Settings`). They are **resource limits only** —
 the relay never inspects content.
+
+## Publishing your relay for discovery
+
+Clients learn about relays from the relays they already use. Publish yours so it
+propagates:
+
+```bash
+NK_ADVERTISE_URL=https://relay.example.com \
+NK_KNOWN_RELAYS=https://relay-b.example,https://relay-c.example \
+python -m noknowledge.server --host 0.0.0.0 --port 8000
+```
+
+or drop a `relays.json` in the data directory (useful for long lists):
+
+```json
+{"relays": ["https://relay-b.example", "https://relay-c.example"]}
+```
+
+`GET /api/relays` then returns all of them, unauthenticated on purpose:
+
+```bash
+curl -s https://relay.example.com/api/relays
+# {"relays":["https://relay.example.com","https://relay-b.example", ...],"advertise":"https://relay.example.com"}
+```
+
+Clients merge that into their own relay list after probing each candidate's
+`/api/health`, up to 8 relays. Discovery is additive — it never removes a relay
+someone configured by hand.
+
+Two consequences worth knowing as an operator:
+
+- Your advertised peers become part of other people's relay sets, so only list
+  relays you are willing to vouch for.
+- Candidates on loopback, LAN or link-local addresses are ignored by clients by
+  default (they can opt in with `NK_ALLOW_PRIVATE_RELAYS=1`), so a private relay
+  must be added manually by whoever wants to use it.
 
 ## systemd
 

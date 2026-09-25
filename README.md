@@ -155,6 +155,25 @@ invisible; there is no central authority to take down.
 See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) for systemd, TLS, Tor and
 operations.
 
+### Default relay and discovery
+
+A new install starts with `https://noknowledge.remotewire.net` in its relay list.
+Self-hosters can ship their own default with `NK_DEFAULT_RELAYS` (comma
+separated). Relays can always be changed in **Settings → Relays**, one URL per
+line.
+
+Relays advertise the peers they know about at `GET /api/relays`. With
+**Automatically discover new relays** enabled (the default), a client unions
+those with its own list, keeps the ones that answer `/api/health`, and starts
+using them — so the network grows without anyone editing settings. Discovery
+never removes a relay, caps the list at 8, and **refuses candidates on loopback,
+LAN or link-local addresses** so a hostile relay cannot use the client to probe
+your network. Set `NK_ALLOW_PRIVATE_RELAYS=1` if you deliberately run relays
+locally or on your own network.
+
+Because your relay list is baked into your signed contact card, adopting a relay
+also tells the people you talk to where to deliver.
+
 ## Testing
 
 ```bash

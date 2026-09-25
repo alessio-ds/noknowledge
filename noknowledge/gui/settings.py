@@ -1,4 +1,4 @@
-"""Persisted GUI settings (relays, proxy, theme)."""
+"""Persisted GUI settings (relays, proxy, theme, discovery)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,24 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 
-DEFAULT_RELAYS = ["http://127.0.0.1:8000"]
+#: The relay a fresh install starts with.
+DEFAULT_RELAYS = ["https://noknowledge.remotewire.net"]
+
+#: Comma-separated override, so a self-hoster can bake in their own relay and
+#: tests never touch the public one.
+DEFAULT_RELAYS_ENV = "NK_DEFAULT_RELAYS"
+
+DEFAULT_DISCOVERY_INTERVAL = 900
+
+
+def default_relays() -> list[str]:
+    """Relays a new install starts with, honouring ``NK_DEFAULT_RELAYS``."""
+    raw = os.environ.get(DEFAULT_RELAYS_ENV)
+    if raw:
+        relays = [item.strip() for item in raw.split(",") if item.strip()]
+        if relays:
+            return relays
+    return list(DEFAULT_RELAYS)
 
 
 def data_dir() -> str:
@@ -17,13 +34,16 @@ def data_dir() -> str:
 
 @dataclass
 class GuiSettings:
-    relays: list[str] = field(default_factory=lambda: list(DEFAULT_RELAYS))
+    relays: list[str] = field(default_factory=default_relays)
     proxy_url: str = ""
     proxy_enabled: bool = False
     fail_closed: bool = False
     theme: str = "dark"
     last_name: str = ""
     poll_seconds: int = 2
+    #: Merge reachable relays advertised by our current relays into the list.
+    auto_discover: bool = True
+    discovery_interval: int = DEFAULT_DISCOVERY_INTERVAL
 
     def save(self, directory: str | None = None) -> None:
         directory = directory or data_dir()

@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from noknowledge.server.config import Settings
 from noknowledge.server.db import Database
 from noknowledge.server.ratelimit import RateLimiters
-from noknowledge.server.routers import blobs, mailboxes, prekeys
+from noknowledge.server.routers import blobs, mailboxes, prekeys, relays
 from noknowledge.version import __version__
 
 
@@ -54,6 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(mailboxes.router, prefix="/api")
     app.include_router(prekeys.router, prefix="/api")
     app.include_router(blobs.router, prefix="/api")
+    app.include_router(relays.router, prefix="/api")
 
     @app.get("/api/health")
     def health() -> dict:

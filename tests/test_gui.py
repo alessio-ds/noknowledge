@@ -34,10 +34,28 @@ def test_settings_roundtrip(tmp_path):
     assert loaded == settings
 
 
-def test_settings_defaults_when_missing(tmp_path):
+def test_settings_defaults_when_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv("NK_DEFAULT_RELAYS", raising=False)
     loaded = GuiSettings.load(str(tmp_path))
-    assert loaded.relays == ["http://127.0.0.1:8000"]
+    assert loaded.relays == ["https://noknowledge.remotewire.net"]
     assert loaded.proxy_enabled is False
+    assert loaded.auto_discover is True
+
+
+def test_shipped_default_relay_is_the_public_one(monkeypatch):
+    monkeypatch.delenv("NK_DEFAULT_RELAYS", raising=False)
+    from noknowledge.gui.settings import DEFAULT_RELAYS, default_relays
+
+    assert DEFAULT_RELAYS == ["https://noknowledge.remotewire.net"]
+    assert default_relays() == DEFAULT_RELAYS
+
+
+def test_default_relays_can_be_overridden(tmp_path, monkeypatch):
+    monkeypatch.setenv("NK_DEFAULT_RELAYS", "http://a.example:1, http://b.example:2")
+    assert GuiSettings.load(str(tmp_path)).relays == [
+        "http://a.example:1",
+        "http://b.example:2",
+    ]
 
 
 def test_settings_ignores_unknown_keys(tmp_path):

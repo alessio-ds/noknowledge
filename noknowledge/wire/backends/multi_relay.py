@@ -62,8 +62,16 @@ class MultiRelayBackend:
     def urls(self) -> list[str]:
         return [relay.base_url for relay in self.relays]
 
-    def close(self) -> None:
+    def shutdown(self) -> None:
+        """Release the worker pool but keep the shared transport open.
+
+        Used when swapping in a new backend for a changed relay set: peer
+        backends share one transport, so closing it would break them too.
+        """
         self._pool.shutdown(wait=False, cancel_futures=True)
+
+    def close(self) -> None:
+        self.shutdown()
         self.transport.close()
 
     # -- mailboxes --------------------------------------------------------

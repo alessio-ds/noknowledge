@@ -51,13 +51,19 @@ class Transport:
             return {}
         return {"http": self.proxy_url, "https": self.proxy_url}
 
-    def request(self, method: str, url: str, **kwargs) -> requests.Response:
+    def request(
+        self, method: str, url: str, timeout: float | None = None, **kwargs
+    ) -> requests.Response:
         proxies = self.proxies_for(url)
         last_error: Exception | None = None
         for attempt in range(self.retries):
             try:
                 return self.session.request(
-                    method, url, timeout=self.timeout, proxies=proxies, **kwargs
+                    method,
+                    url,
+                    timeout=self.timeout if timeout is None else timeout,
+                    proxies=proxies,
+                    **kwargs,
                 )
             except (requests.ConnectionError, requests.Timeout) as exc:
                 last_error = exc

@@ -7,7 +7,7 @@ noticeboard. Every knob here is about resource limits, never about content.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 MAX_BLOB_BYTES = 256 * 1024
 MAX_CHUNK_BYTES = 1024 * 1024
@@ -25,6 +25,11 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _env_list(name: str) -> list[str]:
+    raw = os.environ.get(name, "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 @dataclass
@@ -51,6 +56,12 @@ class Settings:
     writes_per_minute: int = 240
     bundles_per_hour: int = 20
 
+    # Discovery: what this relay tells clients about other relays. Clients merge
+    # these into their own relay list after probing them, so a relay becomes a
+    # seed for the rest of the network.
+    advertise_url: str = ""
+    known_relays: list[str] = field(default_factory=list)
+
     @property
     def db_path(self) -> str:
         return os.path.join(self.data_dir, "relay.db")
@@ -65,6 +76,8 @@ class Settings:
             hashcash_bits=_env_int("NK_HASHCASH_BITS", 20),
             mailbox_ttl_seconds=_env_int("NK_MAILBOX_TTL", 90 * 24 * 3600),
             blob_ttl_seconds=_env_int("NK_BLOB_TTL", 30 * 24 * 3600),
+            advertise_url=os.environ.get("NK_ADVERTISE_URL", "").rstrip("/"),
+            known_relays=_env_list("NK_KNOWN_RELAYS"),
         )
         for key, value in overrides.items():
             if not hasattr(settings, key):

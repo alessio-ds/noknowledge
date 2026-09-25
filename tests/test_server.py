@@ -48,6 +48,53 @@ def test_health(client):
     assert body["mailboxes"] == 0
 
 
+# -- discovery ------------------------------------------------------------
+
+
+def test_relays_endpoint_advertises_configured_peers(tmp_path):
+    client = make_client(
+        tmp_path,
+        advertise_url="https://me.example",
+        known_relays=["https://a.example", "https://b.example"],
+    )
+    try:
+        body = client.get("/api/relays").json()
+        assert body["advertise"] == "https://me.example"
+        assert body["relays"] == [
+            "https://me.example",
+            "https://a.example",
+            "https://b.example",
+        ]
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_relays_endpoint_is_empty_by_default(client):
+    body = client.get("/api/relays").json()
+    assert body["relays"] == []
+    assert body["advertise"] is None
+
+
+def test_relays_endpoint_reads_relays_json(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        (tmp_path / "relay" / "relays.json").write_text(
+            '{"relays": ["https://file.example"]}', encoding="utf-8"
+        )
+        assert client.get("/api/relays").json()["relays"] == ["https://file.example"]
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_relays_endpoint_survives_a_corrupt_relays_json(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        (tmp_path / "relay" / "relays.json").write_text("{not json", encoding="utf-8")
+        assert client.get("/api/relays").json()["relays"] == []
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_schema_has_no_identity_tables(tmp_path):
     client = make_client(tmp_path)
     db_path = tmp_path / "relay" / "relay.db"

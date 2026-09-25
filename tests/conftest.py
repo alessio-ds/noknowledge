@@ -6,6 +6,12 @@ import pytest
 # keyring: force the 0600 key-file fallback for the whole suite.
 os.environ.setdefault("NK_DISABLE_KEYRING", "1")
 
+# Never let a test reach the real public relay baked in as the shipped default.
+os.environ.setdefault("NK_DEFAULT_RELAYS", "http://127.0.0.1:1")
+
+# Test relays run on loopback, which discovery refuses by default.
+os.environ.setdefault("NK_ALLOW_PRIVATE_RELAYS", "1")
+
 from noknowledge.core.client import Client
 from noknowledge.core.store import LocalStore
 from noknowledge.crypto.identity import Identity
