@@ -11,6 +11,8 @@ import pytest
 
 pytest.importorskip("PyQt5")
 
+from PyQt5.QtCore import Qt
+
 from noknowledge.crypto.identity import Identity
 from noknowledge.gui.session import build_transport
 from noknowledge.gui.settings import GuiSettings
@@ -231,5 +233,108 @@ def test_selecting_a_contact_does_not_recurse(qapp, tmp_path, monkeypatch, relay
         window.main_screen.contacts.setCurrentRow(0)
         assert window.current_contact == bob_identity.identity_id
         assert window.main_screen.header.text() == "Bob"
+    finally:
+        window.close()
+
+
+# -- identity display -----------------------------------------------------
+
+BOB_A = "3TPNKFSE2YY02FKNS7MFS51P7G"
+BOB_B = "7QHXW2M4PKR9TVC3DZ8LNB5Y6A"
+
+
+def _app_with_contacts(tmp_path, monkeypatch, contacts):
+    """Build an App whose local store already holds the given contacts."""
+    from noknowledge.crypto.identity import Identity
+    from noknowledge.gui.session import build_client, identity_path
+    from noknowledge.gui.settings import GuiSettings
+
+    monkeypatch.setenv("NK_DISABLE_KEYRING", "1")
+    directory = tmp_path / "me"
+    directory.mkdir()
+    identity, _ = Identity.generate(label="me")
+    identity.save(identity_path(str(directory)))
+    # Inert relay and discovery off, so no test touches the network.
+    settings = GuiSettings(relays=["http://127.0.0.1:1"], auto_discover=False)
+    settings.save(str(directory))
+
+    client = build_client(identity, settings, str(directory))
+    for index, contact in enumerate(contacts):
+        client.store.upsert_contact(
+            identity.identity_id,
+            {
+                "id": contact["id"],
+                "isign": b"i" * 32,
+                "idh": b"x" * 32,
+                "bundle_id": "bundle",
+                "inbox": {"id": f"mailbox{index}", "w": "write-token"},
+                "relays": ["https://relay.example"],
+                "session": None,
+                "nickname": contact.get("nickname"),
+                "created_at": index + 1,
+            },
+        )
+    client.close()
+
+    monkeypatch.setenv("NK_DATA_DIR", str(directory))
+    from noknowledge.gui.app import App
+
+    return App(), identity
+
+
+def test_duplicate_nicknames_are_disambiguated(qapp, tmp_path, monkeypatch):
+    window, _ = _app_with_contacts(
+        tmp_path,
+        monkeypatch,
+        [{"id": BOB_A, "nickname": "Bob"}, {"id": BOB_B, "nickname": "Bob"}],
+    )
+    try:
+        assert window.main_screen.contacts.count() == 2
+        labels = [
+            window.main_screen.contacts.item(row).text()
+            for row in range(window.main_screen.contacts.count())
+        ]
+        assert len(set(labels)) == 2, f"rows are indistinguishable: {labels}"
+        assert labels == ["Bob · 3TPNKFS", "Bob · 7QHXW2M"]
+        # The stored contact id is untouched; only the label is decorated.
+        ids = [
+            window.main_screen.contacts.item(row).data(Qt.UserRole)
+            for row in range(window.main_screen.contacts.count())
+        ]
+        assert ids == [BOB_A, BOB_B]
+    finally:
+        window.close()
+
+
+def test_unique_nickname_is_left_alone(qapp, tmp_path, monkeypatch):
+    window, _ = _app_with_contacts(
+        tmp_path, monkeypatch, [{"id": BOB_A, "nickname": "Bob"}]
+    )
+    try:
+        assert window.main_screen.contacts.item(0).text() == "Bob"
+    finally:
+        window.close()
+
+
+def test_chat_header_shows_the_contact_id(qapp, tmp_path, monkeypatch):
+    window, _ = _app_with_contacts(
+        tmp_path,
+        monkeypatch,
+        [{"id": BOB_A, "nickname": "Bob"}, {"id": BOB_B, "nickname": "Bob"}],
+    )
+    try:
+        window.main_screen.contacts.setCurrentRow(1)
+        assert window.current_contact == BOB_B
+        assert window.main_screen.header.text() == "Bob"
+        assert window.main_screen.header_id.text() == BOB_B
+    finally:
+        window.close()
+
+
+def test_toolbar_shows_your_own_identity_id(qapp, tmp_path, monkeypatch):
+    window, identity = _app_with_contacts(tmp_path, monkeypatch, [])
+    try:
+        assert window.main_screen.identity_label.text() == identity.identity_id
+        assert len(identity.identity_id) == 26
     finally:
         window.close()

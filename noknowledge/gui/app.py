@@ -9,9 +9,10 @@ from __future__ import annotations
 import html
 import os
 import sys
+from collections import Counter
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QFontDatabase
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -336,9 +337,28 @@ class MainScreen(QWidget):
         settings.clicked.connect(app.open_settings)
         self.status = QLabel("starting…")
         self.status.setObjectName("subtitle")
+
+        # Your own identity ID. Nicknames are self-asserted, so the ID is the
+        # only handle a contact can actually verify out of band.
+        self.identity_label = QLabel("")
+        self.identity_label.setObjectName("subtitle")
+        self.identity_label.setFont(
+            QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        )
+        self.identity_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.identity_label.setToolTip(
+            "Your identity ID — share it so a contact can verify you"
+        )
+        self.copy_id = QPushButton("Copy ID")
+        self.copy_id.setObjectName("secondary")
+        self.copy_id.clicked.connect(app.copy_identity_id)
+
         toolbar.addWidget(self.my_card)
         toolbar.addWidget(add)
         toolbar.addWidget(settings)
+        toolbar.addSpacing(12)
+        toolbar.addWidget(self.identity_label)
+        toolbar.addWidget(self.copy_id)
         toolbar.addStretch()
         toolbar.addWidget(self.status)
         layout.addLayout(toolbar)
@@ -352,7 +372,17 @@ class MainScreen(QWidget):
         right_layout = QVBoxLayout(right)
         self.header = QLabel("Select a contact")
         self.header.setObjectName("title")
-        right_layout.addWidget(self.header)
+        self.header_id = QLabel("")
+        self.header_id.setObjectName("subtitle")
+        self.header_id.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.header_id.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        header_box = QWidget()
+        header_layout = QVBoxLayout(header_box)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
+        header_layout.addWidget(self.header)
+        header_layout.addWidget(self.header_id)
+        right_layout.addWidget(header_box)
         self.chat = QTextBrowser()
         right_layout.addWidget(self.chat, stretch=1)
         self.attachments = QListWidget()
@@ -503,6 +533,7 @@ class App(QWidget):
 
     def _start_client(self, identity: Identity) -> None:
         self.identity = identity
+        self.main_screen.identity_label.setText(identity.identity_id)
         self.settings.last_name = identity.label or ""
         self.settings.save(self.directory)
         try:
@@ -554,6 +585,13 @@ class App(QWidget):
             QMessageBox.warning(self, "Card", str(exc))
             return
         CardDialog(card, self).exec_()
+
+    def copy_identity_id(self) -> None:
+        """Copy your identity ID, for verifying yourself with a contact."""
+        if self.identity is None:
+            return
+        QApplication.clipboard().setText(self.identity.identity_id)
+        self.main_screen.set_status("ID copied to clipboard")
 
     def add_contact(self) -> None:
         if self.client is None:
@@ -649,6 +687,10 @@ class App(QWidget):
         try:
             contacts = self.contacts_data()
             selected = self.current_contact
+            # Nicknames are self-asserted, so two contacts can share one. Rows
+            # whose display name collides get a short id suffix.
+            bases = [contact["nickname"] or contact["id"][:8] for contact in contacts]
+            collisions = Counter(bases)
             # Signals stay blocked for the whole rebuild, *including*
             # setCurrentRow. Unblocking first let the row change re-enter
             # _contact_changed -> select_contact -> refresh, recursing until
@@ -656,13 +698,15 @@ class App(QWidget):
             self.main_screen.contacts.blockSignals(True)
             try:
                 self.main_screen.contacts.clear()
-                for contact in contacts:
+                for contact, base in zip(contacts, bases):
                     unread = sum(
                         1
                         for m in self.client.messages(contact["id"])
                         if m["direction"] == "received" and m["state"] == "received"
                     )
-                    label = contact["nickname"] or contact["id"][:8]
+                    label = base
+                    if collisions[base] > 1:
+                        label = f"{base} · {contact['id'][:7]}"
                     if unread:
                         label = f"{label} ({unread})"
                     item = QListWidgetItem(label)
@@ -682,6 +726,7 @@ class App(QWidget):
     def _render_chat(self) -> None:
         if self.client is None or not self.current_contact:
             self.main_screen.header.setText("Select a contact")
+            self.main_screen.header_id.setText("")
             self.main_screen.chat.setHtml("")
             self.main_screen.attachments.clear()
             return
@@ -689,6 +734,9 @@ class App(QWidget):
         self.main_screen.header.setText(
             (contact or {}).get("nickname") or self.current_contact[:12]
         )
+        # Always show the ID, so two same-named contacts are still tellable apart
+        # and a contact's ID can be compared out of band.
+        self.main_screen.header_id.setText(self.current_contact)
         rows = []
         attachments = []
         for message in self.client.messages(self.current_contact):
