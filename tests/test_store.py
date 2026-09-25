@@ -1,7 +1,9 @@
 """Local storage: key resolution precedence and encryption at rest."""
 
 import os
-import sqlite3
+import sys
+
+import pytest
 
 from noknowledge.core.store import LocalStore, resolve_store_key
 
@@ -17,6 +19,10 @@ def test_key_file_takes_precedence_over_keyring(tmp_path, monkeypatch):
     assert resolve_store_key(str(tmp_path), "identity-a") == first
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="os.chmod does not produce POSIX 0600 permissions on Windows",
+)
 def test_key_file_is_owner_only(tmp_path, monkeypatch):
     monkeypatch.setenv("NK_DISABLE_KEYRING", "1")
     resolve_store_key(str(tmp_path), "identity-a")
