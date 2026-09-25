@@ -146,7 +146,9 @@ class CardDialog(QDialog):
 class DevicesDialog(QDialog):
     """The devices that share this account, as advertised to senders."""
 
-    def __init__(self, devices: list, parent=None) -> None:
+    def __init__(
+        self, devices: list, parent=None, current_device_id: str | None = None
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("My devices")
         self.setMinimumWidth(520)
@@ -161,8 +163,9 @@ class DevicesDialog(QDialog):
         listing = QListWidget()
         for device in devices:
             relays = ", ".join(device.relays) or "(this device's relays)"
+            mine = "   ← this device" if device.device_id == current_device_id else ""
             item = QListWidgetItem(
-                f"{device.name or 'unnamed device'}  ·  {device.device_id[:10]}\n"
+                f"{device.name or 'unnamed device'}  ·  {device.device_id[:10]}{mine}\n"
                 f"    mailbox {device.inbox['id'][:10]}…  →  {relays}"
             )
             item.setToolTip(device.device_id)
@@ -675,7 +678,7 @@ class App(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Devices", str(exc))
             return
-        DevicesDialog(devices, self).exec_()
+        DevicesDialog(devices, self, self.client.device_id()).exec_()
 
     def copy_identity_id(self) -> None:
         """Copy your identity ID, for verifying yourself with a contact."""

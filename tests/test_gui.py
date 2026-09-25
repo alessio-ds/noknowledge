@@ -43,7 +43,7 @@ def test_devices_dialog_lists_each_device(qapp):
         ),
     ]
 
-    dialog = DevicesDialog(devices)
+    dialog = DevicesDialog(devices, None, devices[0].device_id)
     try:
         listing = dialog.findChild(QListWidget)
         assert listing is not None
@@ -53,6 +53,10 @@ def test_devices_dialog_lists_each_device(qapp):
         assert devices[0].device_id[:10] in text
         assert devices[0].inbox["id"][:10] in text
         assert "https://other.example" in text
+        # The account name is the same on both devices, so the marker is what
+        # tells you which one you are looking at.
+        assert text.count("this device") == 1
+        assert "this device" in listing.item(0).text()
     finally:
         dialog.close()
 
