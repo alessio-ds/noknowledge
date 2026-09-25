@@ -107,6 +107,42 @@ for message in alice.sync():
     print(message["body"])
 ```
 
+## Try it locally (two accounts, one machine)
+
+One command runs a private relay and two identities that exchange a message, a
+read receipt and a file:
+
+```bash
+uv run python scripts/demo_two_clients.py
+```
+
+It prints the relay's row counts and confirms the relay holds neither identity
+keys nor plaintext. Identities and history land in `./demo_data/{alice,bob}`, so
+you can open the *same* accounts in the GUI and keep talking by hand:
+
+```bash
+NK_DATA_DIR=demo_data/alice NK_DISABLE_KEYRING=1 ./scripts/run_gui.sh
+NK_DATA_DIR=demo_data/bob   NK_DISABLE_KEYRING=1 ./scripts/run_gui.sh
+```
+
+To do it entirely by hand, start a relay and give each client its own data
+directory (they must not share one):
+
+```bash
+# terminal 1
+./scripts/run_server.sh
+
+# terminal 2 and 3 — one per identity
+NK_DATA_DIR=/tmp/nk-alice NK_DISABLE_KEYRING=1 ./scripts/run_gui.sh
+NK_DATA_DIR=/tmp/nk-bob   NK_DISABLE_KEYRING=1 ./scripts/run_gui.sh
+```
+
+Then in one window: **Create a new identity** → save the seed phrase →
+**My card** → *Copy to clipboard*. In the other window: **Add contact** → paste
+the card → select the contact and send a message or attach a file. The first
+message carries the sender's card, so the other side learns the contact
+automatically; the reply then flows back.
+
 ## Federation
 
 Federation is a property of the design, not a feature to enable. A relay keeps

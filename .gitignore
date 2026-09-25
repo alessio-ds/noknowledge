@@ -16,6 +16,7 @@ htmlcov/
 
 # Runtime data (never commit identities or mail)
 data/
+demo_data/
 *.db
 *.db-wal
 *.db-shm

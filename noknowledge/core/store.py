@@ -104,43 +104,21 @@ def derive_key_from_passphrase(passphrase: str, salt: bytes, iterations: int = 6
     ).derive(passphrase.encode("utf-8"))
 
 
-def resolve_store_key(
-    directory: str, identity_id: str, passphrase: str | None = None
-) -> bytes:
-    """Obtain the local storage key.
+def _load_key_file(path: str, passphrase: str | None) -> bytes:
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if data.get("wrapped"):
+        if not passphrase:
+            raise ValueError("local store is passphrase-protected")
+        wrapper = derive_key_from_passphrase(
+            passphrase, b64d(data["salt"]), int(data["iterations"])
+        )
+        nonce, _, ciphertext = _split(b64d(data["wrapped"]))
+        return decrypt(wrapper, nonce, ciphertext)
+    return b64d(data["key"])
 
-    Preference order: OS keyring, then a 0600 key file (optionally wrapped with
-    a passphrase). Set ``NK_DISABLE_KEYRING=1`` to skip the keyring entirely.
-    """
-    os.makedirs(directory, exist_ok=True)
-    if not os.environ.get(DISABLE_KEYRING_ENV):
-        try:
-            import keyring  # type: ignore
 
-            stored = keyring.get_password(KEYRING_SERVICE, identity_id)
-            if stored:
-                return b64d(stored)
-            key = os.urandom(LOCAL_KEY_SIZE)
-            keyring.set_password(KEYRING_SERVICE, identity_id, b64e(key))
-            return key
-        except Exception:
-            pass
-
-    path = os.path.join(directory, "local.key")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        if data.get("wrapped"):
-            if not passphrase:
-                raise ValueError("local store is passphrase-protected")
-            wrapper = derive_key_from_passphrase(
-                passphrase, b64d(data["salt"]), int(data["iterations"])
-            )
-            nonce, _, ciphertext = _split(b64d(data["wrapped"]))
-            return decrypt(wrapper, nonce, ciphertext)
-        return b64d(data["key"])
-
-    key = os.urandom(LOCAL_KEY_SIZE)
+def _write_key_file(path: str, key: bytes, passphrase: str | None) -> None:
     if passphrase:
         salt = os.urandom(16)
         wrapper = derive_key_from_passphrase(passphrase, salt)
@@ -158,6 +136,39 @@ def resolve_store_key(
         os.chmod(path, 0o600)
     except OSError:
         pass
+
+
+def resolve_store_key(
+    directory: str, identity_id: str, passphrase: str | None = None
+) -> bytes:
+    """Obtain the local storage key.
+
+    An existing ``local.key`` file always wins. It may have been created with the
+    keyring disabled (headless, containers, CI, or a scripted demo), and
+    switching modes must never silently orphan the existing local database.
+    Otherwise the OS keyring is preferred, unless ``NK_DISABLE_KEYRING=1`` is
+    set, in which case a fresh 0600 key file is created.
+    """
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, "local.key")
+    if os.path.exists(path):
+        return _load_key_file(path, passphrase)
+
+    if not os.environ.get(DISABLE_KEYRING_ENV):
+        try:
+            import keyring  # type: ignore
+
+            stored = keyring.get_password(KEYRING_SERVICE, identity_id)
+            if stored:
+                return b64d(stored)
+            key = os.urandom(LOCAL_KEY_SIZE)
+            keyring.set_password(KEYRING_SERVICE, identity_id, b64e(key))
+            return key
+        except Exception:
+            pass
+
+    key = os.urandom(LOCAL_KEY_SIZE)
+    _write_key_file(path, key, passphrase)
     return key
 
 
