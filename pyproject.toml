@@ -18,7 +18,14 @@ dependencies = [
 [project.optional-dependencies]
 # Desktop client. Without it, the core library, relay and tests still work;
 # GUI tests skip themselves.
-gui = ["PyQt5>=5.15.10"]
+gui = [
+    "PyQt5>=5.15.10",
+    # Riverbank publishes no Windows wheel of PyQt5-Qt5 above 5.15.2, and 5.15.2
+    # has no Apple-silicon wheel. Pin each platform on its side of 5.15.2 so uv
+    # forks the lock instead of unifiying on a version one platform cannot use.
+    "PyQt5-Qt5==5.15.2; sys_platform == 'win32'",
+    "PyQt5-Qt5>5.15.2; sys_platform != 'win32'",
+]
 # Standalone binaries.
 build = ["pyinstaller>=6.6.0"]
 
