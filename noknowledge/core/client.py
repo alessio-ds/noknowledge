@@ -188,6 +188,16 @@ class Client:
         assert self._own_inbox is not None and self._bundle_id is not None
         entry = self._device_entry()
         existing = self._fetch_own_device_list()
+        if existing is not None and any(
+            device.device_id == entry.device_id
+            and device.inbox == entry.inbox
+            and device.bundle_id == entry.bundle_id
+            and list(device.relays) == list(entry.relays)
+            for device in existing.devices
+        ):
+            # Already advertised exactly like this: republishing would only burn
+            # a relay's prekey quota and churn the record.
+            return
         entries = [
             device
             for device in (existing.devices if existing else [])

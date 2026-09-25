@@ -78,6 +78,9 @@ class Settings:
             blob_ttl_seconds=_env_int("NK_BLOB_TTL", 30 * 24 * 3600),
             advertise_url=os.environ.get("NK_ADVERTISE_URL", "").rstrip("/"),
             known_relays=_env_list("NK_KNOWN_RELAYS"),
+            mailbox_creates_per_hour=_env_int("NK_MAILBOXES_PER_HOUR", 30),
+            writes_per_minute=_env_int("NK_WRITES_PER_MINUTE", 240),
+            bundles_per_hour=_env_int("NK_BUNDLES_PER_HOUR", 20),
         )
         for key, value in overrides.items():
             if not hasattr(settings, key):

@@ -42,8 +42,16 @@ Environment variables (or CLI flags):
 | `NK_HASHCASH_BITS` | `20` | difficulty when enabled |
 | `NK_ADVERTISE_URL` | *(empty)* | this relay's public URL, published for discovery |
 | `NK_KNOWN_RELAYS` | *(empty)* | comma-separated peers to advertise |
+| `NK_MAILBOXES_PER_HOUR` | `30` | mailbox creations allowed per client IP per hour |
+| `NK_WRITES_PER_MINUTE` | `240` | message/attachment writes per client IP per minute |
+| `NK_BUNDLES_PER_HOUR` | `20` | prekey records published per client IP per hour |
 
-Per-mailbox message/byte quotas, rate limits and maximum message sizes live in
+`NK_BUNDLES_PER_HOUR` counts both a prekey bundle and a device list (both live on
+the prekey noticeboard), so a client that starts up repeatedly publishes at most
+two records per start. Raise it only if you front the relay with your own abuse
+controls, or run it behind a proxy that hides client IPs.
+
+Per-mailbox message/byte quotas and maximum message sizes live in
 `noknowledge/server/config.py` (`Settings`). They are **resource limits only** —
 the relay never inspects content.
 

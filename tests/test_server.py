@@ -293,6 +293,20 @@ def test_create_rate_limit(tmp_path):
     client.__exit__(None, None, None)
 
 
+def test_rate_limits_can_be_tuned_from_the_environment(monkeypatch):
+    from noknowledge.server.config import Settings
+
+    monkeypatch.setenv("NK_MAILBOXES_PER_HOUR", "7")
+    monkeypatch.setenv("NK_WRITES_PER_MINUTE", "11")
+    monkeypatch.setenv("NK_BUNDLES_PER_HOUR", "13")
+
+    settings = Settings.from_env(data_dir="/tmp/nk-config-test")
+
+    assert settings.mailbox_creates_per_hour == 7
+    assert settings.writes_per_minute == 11
+    assert settings.bundles_per_hour == 13
+
+
 # -- prekeys --------------------------------------------------------------
 
 
