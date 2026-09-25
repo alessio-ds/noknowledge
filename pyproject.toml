@@ -1,6 +1,6 @@
 [project]
 name = "noknowledge"
-version = "0.1.0"
+version = "1.0.0"
 description = "Zero-knowledge, federated, capability-mailbox messenger in pure Python"
 readme = "README.md"
 requires-python = ">=3.11"

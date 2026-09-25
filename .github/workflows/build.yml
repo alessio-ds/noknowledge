@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*", "[0-9]*"]
   workflow_dispatch:
 
 jobs:
@@ -32,12 +32,22 @@ jobs:
   fedora:
     name: linux x86_64 (fedora)
     runs-on: ubuntu-latest
-    container: fedora:latest
+    container:
+      image: fedora:44
     steps:
       - uses: actions/checkout@v4
       - name: Install Qt system libraries
         run: |
-          dnf install -y mesa-libGL libxkbcommon libxkbcommon-x11
+          dnf -y install \
+            python3 python3-pip binutils \
+            libxkbcommon libxkbcommon-x11 \
+            glib2 libicu fontconfig freetype harfbuzz \
+            libX11 libXext libXrender libXi libXrandr libXcursor libXinerama \
+            libXcomposite libXdamage libXfixes libxcb xcb-util xcb-util-wm \
+            xcb-util-keysyms xcb-util-image xcb-util-renderutil \
+            mesa-libGL mesa-libEGL libglvnd \
+            libpng libjpeg-turbo libzstd xz \
+            xkeyboard-config
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -102,9 +112,6 @@ jobs:
 
   macos-intel:
     name: macos x86_64 (macos-26-intel)
-    # NOTE: every Intel macOS image is a "larger runner" label, which requires a
-    # paid GitHub plan. On an account without larger runners this job will not
-    # schedule; drop it or self-host an Intel macOS runner in that case.
     runs-on: macos-26-intel
     steps:
       - uses: actions/checkout@v4
@@ -130,7 +137,7 @@ jobs:
 
   release:
     name: attach artifacts to release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/')
     needs: [linux, fedora, windows, macos-arm64, macos-intel]
     runs-on: ubuntu-latest
     permissions:
@@ -139,12 +146,39 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Flatten artifacts
+      - name: Delete assets from an earlier build of this tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                ...context.repo, tag,
+              });
+              for (const asset of release.data.assets) {
+                await github.rest.repos.deleteReleaseAsset({
+                  ...context.repo, asset_id: asset.id,
+                });
+                core.info(`Deleted stale asset: ${asset.name}`);
+              }
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.info(`No release exists for ${tag} yet.`);
+            }
+      - name: Package one archive per platform
         run: |
+          set -euo pipefail
           mkdir -p release
-          find artifacts -maxdepth 3 -type f -exec cp {} release/ \;
+          # Binaries share names across platforms (nk-gui, nk-gui.exe, .app
+          # bundles), so archive each platform separately instead of copying
+          # files into one flat directory where they would overwrite each other.
+          for dir in artifacts/*/; do
+            name="$(basename "$dir")"
+            ( cd "$dir" && zip -qr "../${name}.zip" . )
+          done
+          find artifacts -maxdepth 1 -name '*.zip' -exec mv {} release/ \;
           ls -la release
       - uses: softprops/action-gh-release@v2
         with:
-          files: release/*
+          files: release/*.zip
           generate_release_notes: true
