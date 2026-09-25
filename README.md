@@ -138,10 +138,15 @@ NK_DATA_DIR=/tmp/nk-bob   NK_DISABLE_KEYRING=1 ./scripts/run_gui.sh
 ```
 
 Then in one window: **Create a new identity** → save the seed phrase →
-**My card** → *Copy to clipboard*. In the other window: **Add contact** → paste
-the card → select the contact and send a message or attach a file. The first
-message carries the sender's card, so the other side learns the contact
-automatically; the reply then flows back.
+**My card** (shown as text *and* a scannable QR code) → *Copy to clipboard*. In
+the other window: **Add contact** → paste the card → select the contact and send
+a message or attach a file. The first message carries the sender's card, so the
+other side learns the contact automatically; the reply then flows back.
+
+Contacts are identified by their 26-character identity ID, shown under the
+nickname in the chat header and in the toolbar for your own identity. Names are
+self-asserted, so rows whose nickname collides get a short ID suffix
+(`Bob · 3TPNKFS`) — compare IDs, not names, if it matters.
 
 ## Federation
 

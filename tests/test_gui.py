@@ -338,3 +338,73 @@ def test_toolbar_shows_your_own_identity_id(qapp, tmp_path, monkeypatch):
         assert len(identity.identity_id) == 26
     finally:
         window.close()
+
+
+# -- "My card" QR ---------------------------------------------------------
+
+
+def _sample(image):
+    """A coarse pixel fingerprint, enough to compare two renders."""
+    step = max(1, image.width() // 24)
+    return tuple(
+        image.pixel(x, y)
+        for x in range(0, image.width(), step)
+        for y in range(0, image.height(), step)
+    )
+
+
+def test_qr_pixmap_is_square_bi_colour_and_deterministic(qapp):
+    from noknowledge.gui.app import qr_pixmap
+
+    pixmap = qr_pixmap("nk://1/hello")
+    assert pixmap is not None and not pixmap.isNull()
+    assert pixmap.width() == pixmap.height()
+    assert pixmap.width() >= 21  # smallest QR symbol
+
+    image = pixmap.toImage()
+    assert len(set(_sample(image))) > 1, "QR is blank"
+    # Same input renders identically; different input does not.
+    assert _sample(qr_pixmap("nk://1/hello").toImage()) == _sample(image)
+    assert _sample(qr_pixmap("nk://1/other").toImage()) != _sample(image)
+
+
+def test_qr_pixmap_handles_a_real_card(qapp):
+    from noknowledge.core.card import ContactCard
+    from noknowledge.crypto.identity import Identity
+    from noknowledge.gui.app import qr_pixmap
+    from noknowledge.wire.backends.base import MailboxCapability
+
+    identity, _ = Identity.generate(label="alice")
+    card = ContactCard.create(
+        identity,
+        "A" * 16,
+        MailboxCapability.generate(),
+        ["https://noknowledge.remotewire.net"],
+        "alice",
+    )
+    text = card.to_string()
+    assert len(text) > 300  # a real card is well over the smallest QR capacity
+
+    pixmap = qr_pixmap(text)
+    assert pixmap is not None and not pixmap.isNull()
+    assert pixmap.width() == pixmap.height()
+
+
+def test_card_dialog_shows_the_qr(qapp):
+    from noknowledge.core.card import ContactCard
+    from noknowledge.crypto.identity import Identity
+    from noknowledge.gui.app import CardDialog
+    from noknowledge.wire.backends.base import MailboxCapability
+
+    identity, _ = Identity.generate(label="alice")
+    card = ContactCard.create(
+        identity, "B" * 16, MailboxCapability.generate(), ["https://relay.example"]
+    )
+    dialog = CardDialog(card.to_string())
+    try:
+        pixmap = dialog.qr.pixmap()
+        assert pixmap is not None and not pixmap.isNull()
+        # The card text is still available for copying.
+        assert dialog.text.toPlainText() == card.to_string()
+    finally:
+        dialog.close()

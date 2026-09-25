@@ -1,6 +1,6 @@
 [project]
 name = "noknowledge"
-version = "1.1.0"
+version = "1.2.0"
 description = "Zero-knowledge, federated, capability-mailbox messenger in pure Python"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,6 +24,8 @@ dependencies = [
 # GUI tests skip themselves.
 gui = [
     "PyQt5>=5.15.10",
+    # Pure-Python QR codes (no Pillow): renders "My card" as a scannable code.
+    "segno>=1.6.0",
     # Riverbank publishes no Windows wheel of PyQt5-Qt5 above 5.15.2, and 5.15.2
     # has no Apple-silicon wheel. Pin each platform on its side of 5.15.2 so uv
     # forks the lock instead of unifiying on a version one platform cannot use.

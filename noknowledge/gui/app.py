@@ -12,7 +12,7 @@ import sys
 from collections import Counter
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QFontDatabase
+from PyQt5.QtGui import QFont, QFontDatabase, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -82,6 +82,36 @@ class AddContactDialog(QDialog):
         return self.card.toPlainText().strip(), self.nickname.text().strip()
 
 
+def qr_pixmap(text: str, target: int = 300) -> QPixmap | None:
+    """Render ``text`` as a QR code, or ``None`` if that is not possible.
+
+    Drawn module-by-module with an integer scale rather than scaled from a
+    bitmap, so the module edges stay crisp and the code remains scannable.
+    """
+    try:
+        import segno
+
+        matrix = list(segno.make(text, error="m").matrix_iter(border=2))
+    except Exception:
+        return None
+    modules = len(matrix)
+    if modules == 0 or not matrix[0]:
+        return None
+    scale = max(1, target // modules)
+    side = modules * scale
+    pixmap = QPixmap(side, side)
+    pixmap.fill(Qt.white)
+    painter = QPainter(pixmap)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(Qt.black)
+    for y, row in enumerate(matrix):
+        for x, dark in enumerate(row):
+            if dark:
+                painter.drawRect(x * scale, y * scale, scale, scale)
+    painter.end()
+    return pixmap
+
+
 class CardDialog(QDialog):
     def __init__(self, card_text: str, parent=None) -> None:
         super().__init__(parent)
@@ -92,6 +122,15 @@ class CardDialog(QDialog):
             QLabel("Share this with someone so they can message you. Anyone who\n"
                    "has it can write to your mailbox, but only you can read it.")
         )
+        self.qr = QLabel()
+        self.qr.setAlignment(Qt.AlignCenter)
+        pixmap = qr_pixmap(card_text)
+        if pixmap is not None:
+            self.qr.setPixmap(pixmap)
+            self.qr.setToolTip("Scan this with another noknowledge client")
+        else:
+            self.qr.hide()
+        layout.addWidget(self.qr)
         self.text = QPlainTextEdit(card_text)
         self.text.setReadOnly(True)
         layout.addWidget(self.text)
