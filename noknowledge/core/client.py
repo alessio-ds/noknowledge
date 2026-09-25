@@ -82,6 +82,10 @@ class Client:
         if not self.relays:
             raise ValueError("at least one relay URL is required")
         self.backend = backend or MultiRelayBackend(self.relays, transport=transport)
+        # Backends for peers' relay sets, keyed by the normalised URL tuple. A
+        # recipient's signed card says where their mailbox lives, so delivery
+        # goes there rather than to our own relays.
+        self._peer_backends: dict[tuple[str, ...], MultiRelayBackend] = {}
         self.identity_id = identity.identity_id
         self.name = name or identity.label or self.identity_id[:8]
         self.opk_count = opk_count
@@ -231,7 +235,9 @@ class Client:
 
     def _fetch_bundle(self, contact: dict) -> PrekeyBundle:
         try:
-            payload = self.backend.fetch_bundle(contact["bundle_id"])
+            payload = self._backend_for(contact.get("relays")).fetch_bundle(
+                contact["bundle_id"]
+            )
         except Exception as exc:
             raise ClientError(f"could not fetch prekey bundle: {exc}") from exc
         try:
@@ -260,6 +266,27 @@ class Client:
     def _recipient_capability(self, contact: dict) -> MailboxCapability:
         return MailboxCapability.from_card_view(contact["inbox"])
 
+    def _backend_for(self, relays: list[str] | None) -> MultiRelayBackend:
+        """A backend that can reach a peer, using the relays from *their* card.
+
+        This is what makes relaying federated: two people configured with
+        different relays can still talk, because each side delivers to the
+        relays the other advertised. Anything touching our own mailbox still
+        uses ``self.backend``.
+        """
+        urls = normalize_relay_urls(list(relays or []))
+        if not urls:
+            # Cards predating the relay list: fall back to our own relays.
+            return self.backend
+        key = tuple(urls)
+        if key == tuple(self.relays):
+            return self.backend
+        backend = self._peer_backends.get(key)
+        if backend is None:
+            backend = MultiRelayBackend(urls, transport=self.backend.transport)
+            self._peer_backends[key] = backend
+        return backend
+
     def _send_envelope(
         self, contact: dict, session: Session, envelope: dict, kind: str
     ) -> bytes:
@@ -280,7 +307,9 @@ class Client:
             init=init,
             max_size=envelope_max_size(kind),
         )
-        self.backend.put(self._recipient_capability(contact), blob)
+        self._backend_for(contact.get("relays")).put(
+            self._recipient_capability(contact), blob
+        )
         return blob
 
     def send_text(self, contact_id: str, text: str) -> str:
@@ -316,8 +345,9 @@ class Client:
             data = handle.read()
         attachment = encrypt_attachment(data)
         capability = self._recipient_capability(contact)
+        backend = self._backend_for(contact.get("relays"))
         chunk_ids = [
-            self.backend.put_blob(capability, chunk.ciphertext)
+            backend.put_blob(capability, chunk.ciphertext)
             for chunk in attachment.chunks
         ]
         manifest = manifest_dict(attachment, chunk_ids)
@@ -374,7 +404,7 @@ class Client:
             if contact is None:
                 continue
             try:
-                self.backend.put(
+                self._backend_for(contact.get("relays")).put(
                     self._recipient_capability(contact), b64d(entry["payload"])
                 )
                 self.store.outbox_mark_sent(entry["id"])
@@ -594,4 +624,7 @@ class Client:
         return decrypt_attachment(key, nonces, ciphertexts, expected_hash)
 
     def close(self) -> None:
+        for backend in self._peer_backends.values():
+            backend.close()
+        self._peer_backends.clear()
         self.backend.close()

@@ -11,6 +11,7 @@ from noknowledge.core.card import CardError, ContactCard
 from noknowledge.wire.backends.multi_relay import MultiRelayBackend
 from noknowledge.wire.transport import Transport
 from tests.conftest import make_client
+from tests.relay_server import RelayProcess
 
 
 def contact_id_of(client, other):
@@ -240,3 +241,64 @@ def test_proxy_is_used_for_remote_hosts():
 def test_empty_relay_set_is_rejected(tmp_path):
     with pytest.raises(ValueError):
         MultiRelayBackend([])
+
+
+# -- federation: each peer on its own relay -------------------------------
+
+
+def _message_rows(relay) -> int:
+    connection = sqlite3.connect(relay.db_path)
+    try:
+        return int(connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+    finally:
+        connection.close()
+
+
+def test_peers_on_different_relays_can_talk(tmp_path):
+    """Delivery follows the recipient's card, not the sender's own relay set."""
+    relay_a = RelayProcess(tmp_path / "relay_a").start()
+    relay_b = RelayProcess(tmp_path / "relay_b").start()
+    try:
+        alice = make_client(tmp_path, "alice", [relay_a.url])
+        bob = make_client(tmp_path, "bob", [relay_b.url])
+        alice.provision()
+        bob.provision()
+        alice.add_contact(bob.card_string(), nickname="Bob")
+
+        alice.send_text(bob.identity_id, "across the divide")
+        # Alice's relay must stay untouched: Bob's mailbox lives on Bob's relay.
+        assert _message_rows(relay_a) == 0
+        assert _message_rows(relay_b) == 1
+
+        received = bob.sync()
+        assert received and received[0]["body"]["text"] == "across the divide"
+
+        # And the reply must find Alice on *her* relay.
+        bob.send_text(alice.identity_id, "and back again")
+        assert alice.sync()[0]["body"]["text"] == "and back again"
+    finally:
+        relay_a.stop()
+        relay_b.stop()
+
+
+def test_file_transfer_across_relays(tmp_path):
+    relay_a = RelayProcess(tmp_path / "relay_a").start()
+    relay_b = RelayProcess(tmp_path / "relay_b").start()
+    try:
+        alice = make_client(tmp_path, "alice", [relay_a.url])
+        bob = make_client(tmp_path, "bob", [relay_b.url])
+        alice.provision()
+        bob.provision()
+        alice.add_contact(bob.card_string())
+
+        payload = os.urandom(300_000)
+        source = tmp_path / "plans.bin"
+        source.write_bytes(payload)
+        alice.send_file(bob.identity_id, str(source), caption="for you")
+
+        received = bob.sync()
+        file_message = next(m for m in received if m["type"] == "file")
+        assert bob.download_attachment(file_message) == payload
+    finally:
+        relay_a.stop()
+        relay_b.stop()
