@@ -394,6 +394,7 @@ class App(QWidget):
         self.current_contact: str | None = None
         self._pending_identity: Identity | None = None
         self._pending_passphrase = ""
+        self._refreshing = False
 
         self.stack = QStackedWidget()
         outer = QVBoxLayout(self)
@@ -629,31 +630,41 @@ class App(QWidget):
         return self.client.list_contacts()
 
     def refresh(self) -> None:
-        if self.client is None:
+        if self.client is None or self._refreshing:
             return
-        contacts = self.contacts_data()
-        selected = self.current_contact
-        self.main_screen.contacts.blockSignals(True)
-        self.main_screen.contacts.clear()
-        for contact in contacts:
-            unread = sum(
-                1
-                for m in self.client.messages(contact["id"])
-                if m["direction"] == "received" and m["state"] == "received"
-            )
-            label = contact["nickname"] or contact["id"][:8]
-            if unread:
-                label = f"{label} ({unread})"
-            item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, contact["id"])
-            self.main_screen.contacts.addItem(item)
-        self.main_screen.contacts.blockSignals(False)
-        if selected:
-            for index, contact in enumerate(contacts):
-                if contact["id"] == selected:
-                    self.main_screen.contacts.setCurrentRow(index)
-                    break
-        self._render_chat()
+        self._refreshing = True
+        try:
+            contacts = self.contacts_data()
+            selected = self.current_contact
+            # Signals stay blocked for the whole rebuild, *including*
+            # setCurrentRow. Unblocking first let the row change re-enter
+            # _contact_changed -> select_contact -> refresh, recursing until
+            # Python's recursion limit blew up inside json.loads.
+            self.main_screen.contacts.blockSignals(True)
+            try:
+                self.main_screen.contacts.clear()
+                for contact in contacts:
+                    unread = sum(
+                        1
+                        for m in self.client.messages(contact["id"])
+                        if m["direction"] == "received" and m["state"] == "received"
+                    )
+                    label = contact["nickname"] or contact["id"][:8]
+                    if unread:
+                        label = f"{label} ({unread})"
+                    item = QListWidgetItem(label)
+                    item.setData(Qt.UserRole, contact["id"])
+                    self.main_screen.contacts.addItem(item)
+                if selected:
+                    for index, contact in enumerate(contacts):
+                        if contact["id"] == selected:
+                            self.main_screen.contacts.setCurrentRow(index)
+                            break
+            finally:
+                self.main_screen.contacts.blockSignals(False)
+            self._render_chat()
+        finally:
+            self._refreshing = False
 
     def _render_chat(self) -> None:
         if self.client is None or not self.current_contact:

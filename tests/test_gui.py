@@ -163,3 +163,55 @@ def test_create_flow_reaches_seedphrase(qapp, tmp_path, monkeypatch):
     window.seedphrase.ack.setChecked(True)
     assert window.seedphrase.continue_button.isEnabled() is True
     window.close()
+
+
+def test_selecting_a_contact_does_not_recurse(qapp, tmp_path, monkeypatch, relay):
+    """Regression: refresh() re-entered itself via currentRowChanged.
+
+    Previously the contact list unblocked its signals and *then* called
+    setCurrentRow(), so a single user click recursed
+    _contact_changed -> select_contact -> refresh until the interpreter hit its
+    recursion limit (which surfaced, confusingly, inside json.loads).
+
+    The earlier GUI tests called contacts_data() directly and so never
+    exercised the selection signal path.
+    """
+    from noknowledge.crypto.identity import Identity
+    from noknowledge.gui.session import build_client, identity_path
+    from noknowledge.gui.settings import GuiSettings
+
+    monkeypatch.setenv("NK_DISABLE_KEYRING", "1")
+    settings = GuiSettings(relays=[relay.url])
+
+    alice_dir = tmp_path / "alice"
+    alice_dir.mkdir()
+    alice_identity, _ = Identity.generate(label="alice")
+    alice_identity.save(identity_path(str(alice_dir)))
+    settings.save(str(alice_dir))
+    alice = build_client(alice_identity, settings, str(alice_dir))
+    alice.provision()
+
+    bob_dir = tmp_path / "bob"
+    bob_dir.mkdir()
+    bob_identity, _ = Identity.generate(label="bob")
+    bob_identity.save(identity_path(str(bob_dir)))
+    bob = build_client(bob_identity, settings, str(bob_dir))
+    bob.provision()
+
+    alice.add_contact(bob.card_string(), nickname="Bob")
+    alice.close()
+    bob.close()
+
+    monkeypatch.setenv("NK_DATA_DIR", str(alice_dir))
+    from noknowledge.gui.app import App
+
+    window = App()
+    try:
+        assert window.stack.currentWidget() is window.main_screen
+        assert window.main_screen.contacts.count() == 1
+        # This emits currentRowChanged; before the fix it recursed forever.
+        window.main_screen.contacts.setCurrentRow(0)
+        assert window.current_contact == bob_identity.identity_id
+        assert window.main_screen.header.text() == "Bob"
+    finally:
+        window.close()
