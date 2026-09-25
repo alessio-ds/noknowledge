@@ -489,6 +489,14 @@ class LocalStore:
         with self._connect() as connection:
             connection.execute("DELETE FROM outbox WHERE id = ?", (entry_id,))
 
+    def outbox_remove_for_message(self, message_id: str) -> None:
+        """Clear every per-device row for one message (ids are ``msg:device``)."""
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM outbox WHERE id = ? OR id LIKE ?",
+                (message_id, f"{message_id}:%"),
+            )
+
     def outbox_mark_sent(self, entry_id: str) -> None:
         with self._connect() as connection:
             connection.execute(

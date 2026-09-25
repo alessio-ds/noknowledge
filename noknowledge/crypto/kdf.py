@@ -21,6 +21,11 @@ SK_COMMIT_INFO = b"nk/sk-commit/v1"
 CARD_SIGN_INFO = b"nk/card/v1"
 SPK_SIGN_INFO = b"nk/spk/v1"
 AUTH_SIGN_INFO = b"nk/auth/v1"
+DEVICE_SIGN_INFO = b"nk/devices/v1"
+DEVICE_LIST_ID_INFO = b"nk/devices/v1/id"
+#: Device lists are sealed with a key derived from the account's *public* keys,
+#: so any holder of the contact card can read them but the relay cannot.
+DEVICE_LIST_ENC_INFO = b"nk/devices/v1/enc"
 ID_HASH_INFO = b"nk-id"
 
 # X25519 domain separation prefix (RFC 7748 / X3DH): 32 bytes of 0xFF.

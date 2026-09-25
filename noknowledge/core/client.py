@@ -21,6 +21,16 @@ from noknowledge.core.attachments import (
     manifest_dict,
 )
 from noknowledge.core.card import CardError, ContactCard
+from noknowledge.core.devices import (
+    LEGACY_DEVICE,
+    DeviceEntry,
+    DeviceList,
+    DeviceListError,
+    device_list_id,
+    new_device_id,
+    open_device_list,
+    seal_device_list,
+)
 from noknowledge.core.session import Session
 from noknowledge.crypto import x3dh
 from noknowledge.crypto.encoding import b64d, b64e
@@ -92,6 +102,7 @@ class Client:
         self._own_inbox: MailboxCapability | None = None
         self._bundle_id: str | None = None
         self._card: ContactCard | None = None
+        self._device_id: str | None = None
 
     # -- provisioning -----------------------------------------------------
 
@@ -142,7 +153,82 @@ class Client:
         self._card = ContactCard.create(
             self.identity, self._bundle_id, self._own_inbox, self.relays, self.name
         )
+        self._ensure_device_registered()
         return self._card
+
+    # -- devices ----------------------------------------------------------
+
+    def device_id(self) -> str | None:
+        """This device's identifier within the account, once provisioned."""
+        return self._device_id
+
+    def _device_entry(self) -> DeviceEntry:
+        """This device as advertised to senders in the account's device list."""
+        assert self._own_inbox is not None and self._bundle_id is not None
+        return DeviceEntry(
+            device_id=self._device_id or LEGACY_DEVICE,
+            inbox=self._own_inbox.card_view(),
+            relays=list(self.relays),
+            bundle_id=self._bundle_id,
+            name=self.name or "",
+        )
+
+    def _ensure_device_registered(self) -> None:
+        """Add (or refresh) this device in the account's signed device list.
+
+        This is what makes a recovered account work: the device gets its own
+        mailbox and prekeys, then publishes itself so senders start delivering a
+        copy here too.
+        """
+        if self._device_id is None:
+            self._device_id = self.store.get_state(
+                self.identity_id, "device_id"
+            ) or new_device_id()
+            self.store.set_state(self.identity_id, "device_id", self._device_id)
+        assert self._own_inbox is not None and self._bundle_id is not None
+        entry = self._device_entry()
+        existing = self._fetch_own_device_list()
+        entries = [
+            device
+            for device in (existing.devices if existing else [])
+            if device.device_id != entry.device_id
+        ]
+        entries.append(entry)
+        listing = DeviceList.create(self.identity, entries)
+        try:
+            self.backend.publish_bundle(listing.address(), seal_device_list(listing))
+        except Exception:
+            # A relay refusing the record must not break provisioning; senders
+            # simply fall back to the inbox in our contact card.
+            pass
+
+    @property
+    def device_list_address(self) -> str:
+        return device_list_id(
+            self.identity.ed_public_bytes, self.identity.x_public_bytes
+        )
+
+    def _fetch_own_device_list(self) -> DeviceList | None:
+        try:
+            payload = self.backend.fetch_bundle(self.device_list_address)
+        except Exception:
+            return None
+        try:
+            listing = open_device_list(
+                payload, self.identity.ed_public_bytes, self.identity.x_public_bytes
+            )
+        except DeviceListError:
+            return None
+        if not listing.belongs_to(
+            self.identity_id, self.identity.ed_public_bytes, self.identity.x_public_bytes
+        ):
+            return None
+        return listing
+
+    def devices(self) -> list[DeviceEntry]:
+        """Every device currently registered to this account."""
+        listing = self._fetch_own_device_list()
+        return listing.devices if listing else [self._device_entry()]
 
     def _generate_prekeys(self, count: int) -> dict:
         spk_private, spk_public = x3dh.generate_keypair()
@@ -271,26 +357,115 @@ class Client:
         return contact
 
     # -- sessions ---------------------------------------------------------
+    #
+    # A contact may have several devices, each with its own mailbox and its own
+    # Double Ratchet session. Sessions are therefore keyed by device id. The
+    # stored blob is either the v2 container below or a bare v1 session, which
+    # is read as the legacy device so existing contacts keep working.
 
-    def _load_session(self, contact: dict) -> Session | None:
+    def _load_state(self, contact: dict) -> dict:
+        """Session state for a contact.
+
+        ``outbound`` sessions are keyed by the *peer's* device id, ``inbound``
+        ones by *our* device id. They are kept apart on purpose: sharing one map
+        let a receipt write clobber the very session needed to read the reply.
+        """
         raw = contact.get("session")
-        return Session.from_dict(raw) if raw else None
+        if raw and raw.get("v") == 2:
+            devices = []
+            for data in raw.get("devices") or []:
+                try:
+                    devices.append(DeviceEntry.from_dict(data))
+                except DeviceListError:
+                    continue
+            return {
+                "devices": devices,
+                "outbound": {
+                    key: Session.from_dict(value)
+                    for key, value in (raw.get("outbound") or {}).items()
+                },
+                "inbound": {
+                    key: Session.from_dict(value)
+                    for key, value in (raw.get("inbound") or {}).items()
+                },
+            }
+        if raw:
+            # v1 blob: a single session, always an outbound one.
+            return {
+                "devices": [],
+                "outbound": {LEGACY_DEVICE: Session.from_dict(raw)},
+                "inbound": {},
+            }
+        return {"devices": [], "outbound": {}, "inbound": {}}
 
-    def _save_session(self, contact_id: str, session: Session) -> None:
-        self.store.set_contact_session(self.identity_id, contact_id, session.to_dict())
+    def _save_state(self, contact_id: str, state: dict) -> None:
+        self.store.set_contact_session(
+            self.identity_id,
+            contact_id,
+            {
+                "v": 2,
+                "devices": [device.to_dict() for device in state.get("devices", [])],
+                "outbound": {
+                    key: session.to_dict()
+                    for key, session in state.get("outbound", {}).items()
+                },
+                "inbound": {
+                    key: session.to_dict()
+                    for key, session in state.get("inbound", {}).items()
+                },
+            },
+        )
 
-    def _find_session(self, sid: bytes) -> tuple[dict | None, Session | None]:
+    def _cached_devices(self, contact: dict) -> list[DeviceEntry]:
+        devices = self._load_state(contact)["devices"]
+        return devices or [self._legacy_device(contact)]
+
+    def _legacy_device(self, contact: dict) -> DeviceEntry:
+        """The single inbox advertised in a contact card, pre-device-lists."""
+        return DeviceEntry(
+            device_id=LEGACY_DEVICE,
+            inbox=contact["inbox"],
+            relays=list(contact.get("relays") or []),
+            bundle_id=contact["bundle_id"],
+            name=contact.get("nickname") or "",
+        )
+
+    def _find_session(
+        self, sid: bytes
+    ) -> tuple[dict | None, dict | None, str | None, str | None, Session | None]:
+        """Locate a session by its wire id across every contact and bucket."""
         for contact in self.store.list_contacts(self.identity_id):
-            raw = contact.get("session")
-            if raw and b64d(raw["sid"]) == sid:
-                return contact, Session.from_dict(raw)
-        return None, None
+            state = self._load_state(contact)
+            for bucket in ("outbound", "inbound"):
+                for key, session in state[bucket].items():
+                    if session.sid == sid:
+                        return contact, state, bucket, key, session
+        return None, None, None, None, None
 
-    def _fetch_bundle(self, contact: dict) -> PrekeyBundle:
+    def _fetch_peer_device_list(self, contact: dict) -> DeviceList | None:
+        address = device_list_id(contact["isign"], contact["idh"])
         try:
-            payload = self._backend_for(contact.get("relays")).fetch_bundle(
-                contact["bundle_id"]
-            )
+            payload = self._backend_for(contact.get("relays")).fetch_bundle(address)
+        except Exception:
+            return None
+        try:
+            listing = open_device_list(payload, contact["isign"], contact["idh"])
+        except DeviceListError:
+            return None
+        if not listing.belongs_to(contact["id"], contact["isign"], contact["idh"]):
+            return None
+        return listing
+
+    def _peer_devices(self, contact: dict) -> list[DeviceEntry]:
+        """The peer's devices, freshly fetched, else the last known set."""
+        listing = self._fetch_peer_device_list(contact)
+        if listing is not None:
+            return listing.devices
+        return self._cached_devices(contact)
+
+    def _fetch_device_bundle(self, contact: dict, device: DeviceEntry) -> PrekeyBundle:
+        try:
+            payload = self._backend_for(device.relays).fetch_bundle(device.bundle_id)
         except Exception as exc:
             raise ClientError(f"could not fetch prekey bundle: {exc}") from exc
         try:
@@ -298,26 +473,37 @@ class Client:
         except Exception as exc:
             raise ClientError(f"invalid prekey bundle: {exc}") from exc
 
-    def _ensure_outbound_session(self, contact: dict) -> Session:
-        session = self._load_session(contact)
-        if session is not None:
-            return session
-        bundle = self._fetch_bundle(contact)
+    def _start_session(self, contact: dict, device: DeviceEntry) -> Session:
+        bundle = self._fetch_device_bundle(contact, device)
         initiation = x3dh.initiate(bundle, contact["isign"], contact["idh"])
-        session = Session(
+        return Session(
             sid=os.urandom(16),
             ratchet=Ratchet.initiator(initiation.sk, bundle.spk),
             sk=initiation.sk,
             init=initiation.init_dict(),
             established=False,
         )
-        self._save_session(contact["id"], session)
-        return session
+
+    def _ensure_outbound_sessions(
+        self, contact: dict, state: dict
+    ) -> list[DeviceEntry]:
+        """One outbound session per device of the peer, creating any missing."""
+        devices = self._peer_devices(contact)
+        if not devices:
+            devices = [self._legacy_device(contact)]
+        outbound = state["outbound"]
+        for device in devices:
+            if device.device_id not in outbound:
+                outbound[device.device_id] = self._start_session(contact, device)
+        # Sessions for devices the peer no longer advertises are kept, not
+        # deleted: a stale list must never destroy history.
+        return devices
 
     # -- sending ----------------------------------------------------------
 
-    def _recipient_capability(self, contact: dict) -> MailboxCapability:
-        return MailboxCapability.from_card_view(contact["inbox"])
+    def _device_capability(self, device: DeviceEntry) -> MailboxCapability:
+        """The write capability for one device's mailbox."""
+        return MailboxCapability.from_card_view(device.inbox)
 
     def _backend_for(self, relays: list[str] | None) -> MultiRelayBackend:
         """A backend that can reach a peer, using the relays from *their* card.
@@ -341,14 +527,19 @@ class Client:
         return backend
 
     def _send_envelope(
-        self, contact: dict, session: Session, envelope: dict, kind: str
+        self,
+        contact: dict,
+        device: DeviceEntry,
+        session: Session,
+        envelope: dict,
+        kind: str,
     ) -> bytes:
+        envelope = dict(envelope)
         init = None
         if session.is_pending:
             if session.sk is None or session.init is None:
                 raise ClientError("pending session is missing handshake material")
             init = session.init
-            envelope = dict(envelope)
             envelope["auth"] = x3dh.build_auth(
                 self.identity, session.sid, session.init, session.sk
             )
@@ -360,19 +551,43 @@ class Client:
             init=init,
             max_size=envelope_max_size(kind),
         )
-        self._backend_for(contact.get("relays")).put(
-            self._recipient_capability(contact), blob
-        )
+        self._backend_for(device.relays).put(self._device_capability(device), blob)
         return blob
+
+    def _fan_out(
+        self,
+        contact: dict,
+        devices: list[DeviceEntry],
+        sessions: dict[str, Session],
+        envelope_for,
+        kind: str,
+    ) -> list[tuple[DeviceEntry, bytes]]:
+        """Deliver one copy per device, sealed with that device's own session.
+
+        ``envelope_for(device)`` builds the plaintext for one device, so a file
+        transfer can carry that device's own chunk ids.
+        """
+        results = []
+        for device in devices:
+            session = sessions[device.device_id]
+            blob = self._send_envelope(
+                contact, device, session, envelope_for(device), kind
+            )
+            results.append((device, blob))
+        return results
 
     def send_text(self, contact_id: str, text: str) -> str:
         self._ensure_provisioned()
         contact = self._require_contact(contact_id)
-        session = self._ensure_outbound_session(contact)
+        state = self._load_state(contact)
+        devices = self._ensure_outbound_sessions(contact, state)
+        state["devices"] = devices
         message_id = _new_id()
         envelope = make_envelope("text", {"text": text}, message_id, _now_ms())
-        blob = self._send_envelope(contact, session, envelope, "text")
-        self._save_session(contact_id, session)
+        blobs = self._fan_out(
+            contact, devices, state["outbound"], lambda device: envelope, "text"
+        )
+        self._save_state(contact_id, state)
         self.store.add_message(
             {
                 "id": message_id,
@@ -387,33 +602,49 @@ class Client:
                 "meta": None,
             }
         )
-        self._queue_outbox(contact, session, message_id, blob)
+        for device, blob in blobs:
+            self._queue_outbox(contact, device, message_id, blob)
         return message_id
 
     def send_file(self, contact_id: str, path: str, caption: str = "") -> str:
         self._ensure_provisioned()
         contact = self._require_contact(contact_id)
-        session = self._ensure_outbound_session(contact)
+        state = self._load_state(contact)
+        devices = self._ensure_outbound_sessions(contact, state)
+        state["devices"] = devices
         with open(path, "rb") as handle:
             data = handle.read()
         attachment = encrypt_attachment(data)
-        capability = self._recipient_capability(contact)
-        backend = self._backend_for(contact.get("relays"))
-        chunk_ids = [
-            backend.put_blob(capability, chunk.ciphertext)
-            for chunk in attachment.chunks
-        ]
-        manifest = manifest_dict(attachment, chunk_ids)
-        manifest["name"] = os.path.basename(path)
-        manifest["mime"] = (
-            mimetypes.guess_type(path)[0] or "application/octet-stream"
-        )
+        name = os.path.basename(path)
+        mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+        # Each device's mailbox needs its own chunk ids, so the manifest is built
+        # per device and travels inside that device's copy of the message.
+        bodies: dict[str, dict] = {}
+        for device in devices:
+            backend = self._backend_for(device.relays)
+            capability = self._device_capability(device)
+            chunk_ids = [
+                backend.put_blob(capability, chunk.ciphertext)
+                for chunk in attachment.chunks
+            ]
+            manifest = manifest_dict(attachment, chunk_ids)
+            manifest["name"] = name
+            manifest["mime"] = mime
+            bodies[device.device_id] = {"caption": caption, "attachment": manifest}
 
         message_id = _new_id()
-        body = {"caption": caption, "attachment": manifest}
-        envelope = make_envelope("file", body, message_id, _now_ms())
-        blob = self._send_envelope(contact, session, envelope, "file")
-        self._save_session(contact_id, session)
+        blobs = self._fan_out(
+            contact,
+            devices,
+            state["outbound"],
+            lambda device: make_envelope(
+                "file", bodies[device.device_id], message_id, _now_ms()
+            ),
+            "file",
+        )
+        self._save_state(contact_id, state)
+        body = bodies[devices[0].device_id]
         self.store.add_message(
             {
                 "id": message_id,
@@ -428,19 +659,22 @@ class Client:
                 "meta": None,
             }
         )
-        self._queue_outbox(contact, session, message_id, blob)
+        for device, blob in blobs:
+            self._queue_outbox(contact, device, message_id, blob)
         return message_id
 
     def _queue_outbox(
-        self, contact: dict, session: Session, message_id: str, blob: bytes
+        self, contact: dict, device: DeviceEntry, message_id: str, blob: bytes
     ) -> None:
         self.store.outbox_add(
             {
-                "id": message_id,
+                # One row per device copy. The message id is the prefix, so the
+                # receipt for a message clears every device's row.
+                "id": f"{message_id}:{device.device_id}",
                 "identity_id": self.identity_id,
                 "contact_id": contact["id"],
-                "mailbox_id": contact["inbox"]["id"],
-                "relay": None,
+                "mailbox_id": device.inbox["id"],
+                "relay": ",".join(device.relays),
                 "payload": b64e(blob),
                 "seq": 1,  # already accepted by at least one relay
                 "created_at": time.time(),
@@ -456,9 +690,19 @@ class Client:
             contact = self.store.get_contact(self.identity_id, entry["contact_id"])
             if contact is None:
                 continue
+            device = next(
+                (
+                    candidate
+                    for candidate in self._cached_devices(contact)
+                    if candidate.inbox.get("id") == entry["mailbox_id"]
+                ),
+                None,
+            )
+            if device is None:
+                continue
             try:
-                self._backend_for(contact.get("relays")).put(
-                    self._recipient_capability(contact), b64d(entry["payload"])
+                self._backend_for(device.relays).put(
+                    self._device_capability(device), b64d(entry["payload"])
                 )
                 self.store.outbox_mark_sent(entry["id"])
                 sent += 1
@@ -478,7 +722,7 @@ class Client:
         for item in fetched:
             max_seq[item.relay] = max(max_seq.get(item.relay, 0), item.seq)
             try:
-                message = self._handle_blob(capability, item.blob)
+                message = self._handle_blob(item.blob)
             except Exception:
                 message = None
             if message:
@@ -487,10 +731,10 @@ class Client:
             self.backend.ack(capability, max_seq)
         return new_messages
 
-    def _handle_blob(self, own_capability: MailboxCapability, blob: bytes) -> dict | None:
+    def _handle_blob(self, blob: bytes) -> dict | None:
         wire = parse_wire(blob)
         sid = b64d(wire["sid"])
-        contact, session = self._find_session(sid)
+        contact, state, bucket, key, session = self._find_session(sid)
 
         fresh = False
         pending_opk: int | None = None
@@ -512,14 +756,21 @@ class Client:
             contact = self._finish_inbound(session, envelope, pending_opk)
             if contact is None:
                 return None
+            # The peer addressed our own inbox directly, so this session belongs
+            # to this device.
+            state = self._load_state(contact)
+            bucket, key = "inbound", self._device_id or LEGACY_DEVICE
         else:
-            assert contact is not None
+            assert contact is not None and state is not None
             if not session.established:
                 session.established = True
                 session.sk = None
 
-        self._save_session(contact["id"], session)
-        return self._process_envelope(contact, session, envelope, own_capability)
+        assert contact is not None and state is not None
+        assert bucket is not None and key is not None
+        state[bucket][key] = session
+        self._save_state(contact["id"], state)
+        return self._process_envelope(contact, envelope)
 
     def _begin_inbound(self, wire: dict) -> tuple[Session, int | None] | None:
         init = wire["init"]
@@ -577,11 +828,10 @@ class Client:
         if card.isign != b64d(auth["isign"]):
             return None
 
-        contact = self._store_card(card, session=session.to_dict())
+        contact = self._store_card(card)
         self._consume_opk(opk_id)
         session.established = True
         session.sk = None
-        self._save_session(contact["id"], session)
         return contact
 
     def _consume_opk(self, opk_id: int | None) -> None:
@@ -596,9 +846,7 @@ class Client:
     def _process_envelope(
         self,
         contact: dict,
-        session: Session,
         envelope: dict,
-        own_capability: MailboxCapability,
     ) -> dict | None:
         kind = envelope.get("type")
         envelope_id = envelope.get("id")
@@ -624,7 +872,7 @@ class Client:
                 "meta": None,
             }
             self.store.add_message(message)
-            self._send_receipt(contact, session, envelope_id, kind="delivered")
+            self._send_receipt(contact, envelope_id, kind="delivered")
             return self.store.get_message(message["id"])
 
         if kind == "receipt":
@@ -632,32 +880,43 @@ class Client:
             if target:
                 state = body.get("kind") or "read"
                 self.store.update_message(target, state=state)
-                self.store.outbox_remove(target)
+                # One row per device copy, all prefixed by the message id.
+                self.store.outbox_remove_for_message(target)
             return None
 
         return None
 
     def _send_receipt(
-        self, contact: dict, session: Session, of_id: str, kind: str = "delivered"
+        self, contact: dict, of_id: str, kind: str = "delivered"
     ) -> None:
+        """Tell every device of the peer that we opened its copy of a message."""
         envelope = make_envelope(
             "receipt", {"of": of_id, "kind": kind}, _new_id(), _now_ms()
         )
-        self._send_envelope(contact, session, envelope, "receipt")
-        self._save_session(contact["id"], session)
+        try:
+            # Re-read: the caller's dict may predate a session saved moments ago
+            # (a stale row would rewrite the store and drop that session).
+            contact = self.store.get_contact(self.identity_id, contact["id"]) or contact
+            state = self._load_state(contact)
+            devices = self._ensure_outbound_sessions(contact, state)
+            state["devices"] = devices
+            self._fan_out(
+                contact, devices, state["outbound"], lambda device: envelope, "receipt"
+            )
+            self._save_state(contact["id"], state)
+        except Exception:
+            # A receipt is best effort: never let it fail the message it acks.
+            pass
 
     def mark_read(self, contact_id: str, message_id: str) -> None:
         contact = self._require_contact(contact_id)
-        session = self._load_session(contact)
-        if session is None:
-            raise ClientError("no session with this contact")
         message = self.store.get_message(message_id)
         if message is None:
             raise ClientError(f"unknown message: {message_id}")
         # The peer knows this message by *its* envelope id, which we recorded as
         # remote_id; referencing our local id would be meaningless to them.
         target = message.get("remote_id") or message_id
-        self._send_receipt(contact, session, target, kind="read")
+        self._send_receipt(contact, target, kind="read")
 
     # -- reading ----------------------------------------------------------
 

@@ -143,6 +143,40 @@ class CardDialog(QDialog):
         QApplication.clipboard().setText(self.text.toPlainText())
 
 
+class DevicesDialog(QDialog):
+    """The devices that share this account, as advertised to senders."""
+
+    def __init__(self, devices: list, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("My devices")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(
+                "Every device below receives its own encrypted copy of anything\n"
+                "sent to you. To add one, restore your seed phrase on it — it gets\n"
+                "a fresh mailbox and joins this list automatically."
+            )
+        )
+        listing = QListWidget()
+        for device in devices:
+            relays = ", ".join(device.relays) or "(this device's relays)"
+            item = QListWidgetItem(
+                f"{device.name or 'unnamed device'}  ·  {device.device_id[:10]}\n"
+                f"    mailbox {device.inbox['id'][:10]}…  →  {relays}"
+            )
+            item.setToolTip(device.device_id)
+            listing.addItem(item)
+        layout.addWidget(listing)
+        layout.addWidget(
+            QLabel(
+                "History is not synced: a newly added device sees messages sent\n"
+                "after it joined."
+            )
+        )
+        layout.addWidget(QDialogButtonBox(QDialogButtonBox.Close, rejected=self.reject))
+
+
 class SettingsDialog(QDialog):
     def __init__(self, settings: GuiSettings, parent=None) -> None:
         super().__init__(parent)
@@ -391,6 +425,12 @@ class MainScreen(QWidget):
         self.copy_id = QPushButton("Copy ID")
         self.copy_id.setObjectName("secondary")
         self.copy_id.clicked.connect(app.copy_identity_id)
+        self.devices_button = QPushButton("Devices")
+        self.devices_button.setObjectName("secondary")
+        self.devices_button.setToolTip(
+            "Every device on your account receives its own encrypted copy"
+        )
+        self.devices_button.clicked.connect(app.show_devices)
 
         toolbar.addWidget(self.my_card)
         toolbar.addWidget(add)
@@ -398,6 +438,7 @@ class MainScreen(QWidget):
         toolbar.addSpacing(12)
         toolbar.addWidget(self.identity_label)
         toolbar.addWidget(self.copy_id)
+        toolbar.addWidget(self.devices_button)
         toolbar.addStretch()
         toolbar.addWidget(self.status)
         layout.addLayout(toolbar)
@@ -624,6 +665,17 @@ class App(QWidget):
             QMessageBox.warning(self, "Card", str(exc))
             return
         CardDialog(card, self).exec_()
+
+    def show_devices(self) -> None:
+        """List the devices that share this account."""
+        if self.client is None:
+            return
+        try:
+            devices = self.client.devices()
+        except Exception as exc:
+            QMessageBox.warning(self, "Devices", str(exc))
+            return
+        DevicesDialog(devices, self).exec_()
 
     def copy_identity_id(self) -> None:
         """Copy your identity ID, for verifying yourself with a contact."""

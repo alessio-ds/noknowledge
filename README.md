@@ -179,6 +179,37 @@ locally or on your own network.
 Because your relay list is baked into your signed contact card, adopting a relay
 also tells the people you talk to where to deliver.
 
+## Multiple devices on one account
+
+Your account *is* the seed phrase. A **device** — each install, each machine — is
+one mailbox with its own prekeys and its own ratchet sessions. Restore the seed
+on a new machine and it becomes another device on the same account; people who
+already have your card start delivering to it too, with nothing to re-add and
+nothing to type.
+
+That works because each account publishes a signed **device list** listing its
+devices' mailboxes. Senders fan a message out as one encrypted copy per device,
+so every device decrypts it with its own session. Devices deliberately do *not*
+share a mailbox (whichever polled first would eat the message and ack it) or
+ratchet state (each would advance the chain independently and diverge).
+
+The device list lives at an address anyone can derive from your public keys, and
+is sealed with a key derived from those keys too — so a peer holding your card
+can read it, while a relay sees only an opaque box and cannot group your
+mailboxes together or link them to an identity. Devices that existed before this
+feature still work: with no list published, senders fall back to the inbox in
+your contact card exactly as before.
+
+```bash
+# A second device for an existing account: restore the seed phrase, get a fresh
+# mailbox, and land in the same device list.
+NK_DATA_DIR=/tmp/nk-alice-laptop NK_DISABLE_KEYRING=1 ./scripts/run_gui.sh
+```
+
+**What does not come back:** message history. The seed restores your *identity*,
+not your logs — a newly added device receives everything sent after it joined,
+and history stays on the devices that already had it.
+
 ## Testing
 
 ```bash
@@ -209,10 +240,10 @@ uv run --no-sync python scripts/build.py --all   # -> dist/nk-gui, dist/nk-serve
 noknowledge/
   crypto/   identity, KDF, AEAD, padding, X3DH, Double Ratchet
   wire/     protocol framing, transport, relay backends (HTTP, multi-relay)
-  core/     client, contact cards, sessions, attachments, encrypted store
+  core/     client, contact cards, devices, sessions, attachments, encrypted store
   server/   FastAPI relay (mailboxes, prekeys, blobs)
   gui/      PyQt5 desktop client
-tests/      crypto, server, end-to-end, failover, hardening and GUI tests
+tests/      crypto, server, end-to-end, failover, devices, hardening and GUI tests
 scripts/    run_server.sh, run_gui.sh, build.py, wipe.sh
 docs/       self-hosting and operations
 uv.lock     pinned, reproducible environment
@@ -230,10 +261,11 @@ uv.lock     pinned, reproducible environment
 ## Scope
 
 **In:** 1:1 text, read/delivery receipts, encrypted attachments, multi-relay
-replication, federation, SOCKS5/Tor fail-closed mode.
+replication, federation, multiple devices per account, SOCKS5/Tor fail-closed
+mode.
 
-**Not yet:** group chats, multi-device, a public lookup directory, full P2P/DHT,
-and resistance to global traffic analysis.
+**Not yet:** group chats, history sync across devices, a public lookup
+directory, full P2P/DHT, and resistance to global traffic analysis.
 
 ## License
 

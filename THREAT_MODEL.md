@@ -31,7 +31,9 @@ even if every relay is hostile.
   the design does not add cover traffic or per-message delays.
 - **Endpoint security.** Malware or an attacker with the device and an unlocked
   vault defeats all of this. Local storage encryption protects data at rest only.
-- **Multi-device, groups, metadata-private discovery.** See `PLAN.md` §0.
+- **Groups, metadata-private discovery, history sync.** See `PLAN.md` §0.
+  Multiple devices are supported, but the seed restores identity, not message
+  history: a newly added device sees only what is sent after it joins.
 - **Deniability against a recipient.** A recipient can prove to a third party who
   sent a message, because the first message carries an Ed25519 signature.
 
@@ -56,7 +58,10 @@ even if every relay is hostile.
 ### A1 — Honest-but-curious relay (primary)
 Follows the protocol but records everything it can. **Must learn:** mailbox ids,
 blob sizes, timestamps, IPs. **Must not learn:** content, identities, or linkage.
-Mitigated by: opaque blobs, hashed tokens, capability addressing, anonymous X3DH.
+Mitigated by: opaque blobs, hashed tokens, capability addressing, anonymous X3DH,
+and a **sealed device list** (§9 of the protocol) that carries the account's
+mailboxes only inside a box keyed by the account's public keys — so a relay
+cannot group one account's mailboxes or tie the record to an identity id.
 
 ### A2 — Malicious relay
 May tamper with, drop, reorder, replay, or fabricate traffic; may substitute
@@ -117,6 +122,8 @@ mitigation, deferred to hardening.
 | Mailbox squatting | Mailbox ids are unguessable random values distributed only via cards |
 | Disk-fill via blobs | Blob upload requires a write capability; per-mailbox byte quota |
 | Prekey exhaustion | Bundles replenish; X3DH tolerates missing OPK (3-DH fallback) |
+| Relay injects a device into an account | Device list is signed by the account key; a relay cannot add a mailbox |
+| Relay links an account's mailboxes | Device list is sealed under a key derived from the account's public keys; the relay sees only a hash address and an opaque box |
 
 ---
 
@@ -168,3 +175,6 @@ migrating to other relays and re-delivering from the outbox.
 | Availability | `test_relay_failover`: kill one relay mid-conversation, delivery completes |
 | Quota/spam | test 404 nonexistent, 429 over quota, 401 bad token |
 | Padding | test that two different-length plaintexts produce equal ciphertext length |
+| Multi-device delivery | test that a second device on one account receives a copy, and that a recovered device joins the list and starts receiving |
+| Device list privacy | test that the stored record leaks no identity keys, mailbox ids or write tokens |
+| Legacy fallback | test that a peer with no published device list is still reached at the card inbox |

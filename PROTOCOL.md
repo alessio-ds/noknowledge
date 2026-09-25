@@ -134,7 +134,8 @@ nk://1/<b64( DEFLATE( JSONc(payload) ) )>
 
 `sig` = `Ed25519(IK_sign, b"nk/card/v1" || JSONc(payload without "sig"))`.
 
-- `inbox` is the recipient's write capability: `id` + write token `w`.
+- `inbox` is the recipient's write capability: `id` + write token `w`. It is
+  the **fallback** destination for peers that publish no device list (§9).
 - `relays` is the recipient's **relay set** (PLAN §8.2). The sender replicates
   the first message to all of them.
 - A card is self-authenticating: IDs, prekeys and relay URLs are all covered by
@@ -339,9 +340,75 @@ mechanism that replaces pyzk's expiry queue: undeliverable mail is never accepte
 
 ---
 
-## 9. Versioning
+## 9. Devices and fan-out
 
-`v` appears in the card, wire message, bundle and envelope. A receiver rejects
-unknown major versions. Additive fields are ignored; semantics changes bump `v`.
-The relay stores blobs opaquely and never parses them, so protocol evolution
-does not require relay upgrades.
+An **account** is an identity (the seed phrase). A **device** is one mailbox with
+its own prekeys and its own Double Ratchet sessions. Each account publishes a
+signed **device list** so that senders can deliver a copy to every device.
+
+```
+list_address = b64( SHA-256( b"nk/devices/v1/id" || isign || idh )[0:16] )
+```
+
+The list is stored on a relay under the *existing* prekey record endpoint — no
+server change is required — under a sealed record:
+
+```json
+{
+  "v": 1,
+  "bundle_id": "<list_address>",
+  "box": "b64( nonce(12) || ChaCha20-Poly1305(ct) )"
+}
+```
+
+```json
+// plaintext inside box
+{
+  "v": 1,
+  "account": "26-char identity id",
+  "isign": "b64(32)",
+  "idh": "b64(32)",
+  "bundle_id": "<list_address>",
+  "updated": 1730000000000,
+  "devices": [
+    {
+      "device": "b64(16)",
+      "inbox": {"id": "b64(16)", "w": "b64(32)"},
+      "relays": ["https://relay1.example"],
+      "bundle": "b64(16)",
+      "name": "optional device label"
+    }
+  ],
+  "sig": "b64(64)"
+}
+```
+
+- Key: `HKDF-SHA256(ikm = isign || idh, salt = 0^32, info = b"nk/devices/v1/enc")`.
+  The inputs are the account's **public** keys, so any peer holding the card can
+  open the box while the relay cannot link the record to an identity or group
+  an account's mailboxes.
+- `sig` = `Ed25519(IK_sign, b"nk/devices/v1" || JSONc(payload without "sig"))`,
+  covering the device set: a relay cannot inject a mailbox of its own.
+- Devices do **not** share a mailbox (the first poller consumes and acks) or
+  ratchet state (each would advance the chain independently and diverge).
+
+**Sending.** The sender fetches the list, then seals one copy of the envelope per
+device, each under that device's own Double Ratchet session, and writes each copy
+to that device's mailbox on that device's relays. File transfers build a
+per-device manifest, because chunk ids belong to the mailbox that holds them.
+
+**Receiving.** Each device polls its own mailbox; inbound sessions are keyed by
+this device's id and outbound ones by the peer's, so the two never collide.
+
+**Compatibility.** If no list exists at the address (an older client, or a
+contact added before device lists), the sender falls back to the single `inbox`
+in the contact card, exactly as in v1 of this specification.
+
+---
+
+## 10. Versioning
+
+`v` appears in the card, wire message, bundle, device list and envelope. A
+receiver rejects unknown major versions. Additive fields are ignored; semantics
+changes bump `v`. The relay stores blobs opaquely and never parses them, so
+protocol evolution does not require relay upgrades.

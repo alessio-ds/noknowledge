@@ -51,6 +51,15 @@ def two_relays(tmp_path):
 
 def make_client(tmp_path, name, relays):
     identity, _ = Identity.generate(label=name)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    store = LocalStore(str(tmp_path / f"{name}.db"), key=os.urandom(32))
+    store.initialize()
+    return Client(identity, store, relays, name=name, transport=fast_transport())
+
+
+def make_device(tmp_path, name, relays, identity):
+    """A second device on an existing account: same keys, fresh mailbox/store."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     store = LocalStore(str(tmp_path / f"{name}.db"), key=os.urandom(32))
     store.initialize()
     return Client(identity, store, relays, name=name, transport=fast_transport())

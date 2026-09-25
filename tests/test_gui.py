@@ -12,11 +12,49 @@ import pytest
 pytest.importorskip("PyQt5")
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QListWidget
 
+from noknowledge.core.devices import DeviceEntry
 from noknowledge.crypto.identity import Identity
+from noknowledge.gui.app import DevicesDialog
 from noknowledge.gui.session import build_transport
 from noknowledge.gui.settings import GuiSettings
 from noknowledge.gui.worker import Worker
+
+
+# -- devices dialog -------------------------------------------------------
+
+
+def test_devices_dialog_lists_each_device(qapp):
+    devices = [
+        DeviceEntry(
+            device_id="device-one-identifier",
+            inbox={"id": "mailbox-one-identifier", "w": "token"},
+            relays=["https://relay.example"],
+            bundle_id="bundle-one",
+            name="laptop",
+        ),
+        DeviceEntry(
+            device_id="device-two-identifier",
+            inbox={"id": "mailbox-two-identifier", "w": "token"},
+            relays=["https://relay.example", "https://other.example"],
+            bundle_id="bundle-two",
+            name="phone",
+        ),
+    ]
+
+    dialog = DevicesDialog(devices)
+    try:
+        listing = dialog.findChild(QListWidget)
+        assert listing is not None
+        assert listing.count() == 2
+        text = "\n".join(listing.item(i).text() for i in range(listing.count()))
+        assert "laptop" in text and "phone" in text
+        assert devices[0].device_id[:10] in text
+        assert devices[0].inbox["id"][:10] in text
+        assert "https://other.example" in text
+    finally:
+        dialog.close()
 
 
 # -- settings -------------------------------------------------------------

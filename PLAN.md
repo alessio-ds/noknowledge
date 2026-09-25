@@ -22,10 +22,11 @@ Reference implementation for study only: `/Users/alessiodellasanta/Documents/pyz
 | Compatibility | **Greenfield** — no pyzk data migration, new identities |
 | Forward secrecy | **X3DH + full Double Ratchet** |
 | Scope v1 | 1:1 text + read receipts, file transfer, Tor/SOCKS5-only mode |
+| Multi-device | **In v1**: account = seed, device = its own mailbox + prekeys + ratchet; signed sealed device list at a publicly derivable address, one ciphertext fanned out per device; fallback to the card inbox when no list exists |
 | Threat model | Server must not learn **content** or **sender↔recipient linkage**; timing/IP metadata is out of scope for v1 (but proxy support is in) |
 | Availability | Relays are **untrusted and replaceable**: replicated mailboxes across a configurable relay set + sender outbox with re-delivery (§8) |
 | Federation | **In v1**: any relay instance is a federated node; cards point at arbitrary relay URLs; no shared state, no central directory, no inter-relay trust |
-| Out of scope v1 | Group chats, multi-device, public lookup directory, full P2P/DHT |
+| Out of scope v1 | Group chats, history sync across devices, public lookup directory, full P2P/DHT |
 
 ---
 
