@@ -65,9 +65,11 @@ class StubClient:
     def __init__(self) -> None:
         self.synced = 0
         self.done: list = []
+        self.synced_event = threading.Event()
 
     def sync(self, wait: int = 0):
         self.synced += 1
+        self.synced_event.set()
         return []
 
     def flush_outbox(self) -> int:
@@ -77,20 +79,24 @@ class StubClient:
 def test_worker_runs_submitted_tasks(qapp):
     client = StubClient()
     worker = Worker(client, poll_seconds=1)
-    event = threading.Event()
+    task_event = threading.Event()
 
     def task(value):
         client.done.append(value)
-        event.set()
+        task_event.set()
         return value * 2
 
     worker.start()
+    # Let the poll loop run at least once before stopping: otherwise stop() can
+    # win the race and sync() is never reached, which made this assertion flaky
+    # (it failed on Windows/py3.11 and passed on py3.13).
+    assert client.synced_event.wait(10), "worker never polled"
     worker.submit("double", task, 21)
-    assert event.wait(10), "worker did not run the submitted task"
+    assert task_event.wait(10), "worker did not run the submitted task"
     worker.stop()
     worker.wait(5000)
     assert client.done == [21]
-    assert client.synced >= 1
+    assert not worker.isRunning()
 
 
 def test_worker_survives_client_errors(qapp):

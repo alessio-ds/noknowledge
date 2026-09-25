@@ -6,7 +6,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-    "cryptography>=42.0.0",
+    # cryptography 49+ ships arm64-only macOS wheels, which forces a source
+    # build on Intel macOS and leaves PyInstaller with a mismatched OpenSSL
+    # (the frozen binary then dies on _SSL_get0_group_name). 48 and below still
+    # publish universal2 wheels, so cap below 49 to keep macos-26-intel working.
+    "cryptography>=42.0.0,<49",
     "mnemonic>=0.21",
     "requests>=2.31.0",
     "PySocks>=1.7.1",
