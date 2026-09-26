@@ -23,6 +23,13 @@ SPK_SIGN_INFO = b"nk/spk/v1"
 AUTH_SIGN_INFO = b"nk/auth/v1"
 DEVICE_SIGN_INFO = b"nk/devices/v1"
 DEVICE_LIST_ID_INFO = b"nk/devices/v1/id"
+#: Per-device sync keys live in their own record so the device list format stays
+#: unchanged and older clients keep parsing it.
+DEVICE_KEYS_ID_INFO = b"nk/devices/v1/keys"
+DEVICE_KEYS_SIGN_INFO = b"nk/devices/v1/keys/sig"
+#: Device-to-device transfer: everything is derived from one ECIES secret.
+DEVICE_SYNC_INFO = b"nk/devices/v1/sync"
+DEVICE_SYNC_ITEM_INFO = b"nk/devices/v1/sync/item"
 #: Device lists are sealed with a key derived from the account's *public* keys,
 #: so any holder of the contact card can read them but the relay cannot.
 DEVICE_LIST_ENC_INFO = b"nk/devices/v1/enc"

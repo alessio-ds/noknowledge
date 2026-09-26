@@ -173,6 +173,14 @@ class CardDialog(QDialog):
         QApplication.clipboard().setText(self.text.toPlainText())
 
 
+def describe_range(since_ms) -> str:
+    """Human wording for a history window."""
+    if not since_ms:
+        return "everything"
+    days = max(1, round((time.time() * 1000 - float(since_ms)) / (24 * 3600 * 1000)))
+    return f"the last {days} day{'s' if days != 1 else ''}"
+
+
 class DevicesDialog(QDialog):
     """The devices that share this account, as advertised to senders."""
 
@@ -184,10 +192,12 @@ class DevicesDialog(QDialog):
         app=None,
         cache_bytes: int = 0,
         cache_chunks: int = 0,
+        sync_status: list | None = None,
+        requests: list | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("My devices")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(600)
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
@@ -196,21 +206,84 @@ class DevicesDialog(QDialog):
                 "a fresh mailbox and joins this list automatically."
             )
         )
+        status = {item["device_id"]: item for item in (sync_status or [])}
         listing = QListWidget()
         for device in devices:
             relays = ", ".join(device.relays) or "(this device's relays)"
             mine = "   ← this device" if device.device_id == current_device_id else ""
-            item = QListWidgetItem(
-                f"{device.name or 'unnamed device'}  ·  {device.device_id[:10]}{mine}\n"
-                f"    mailbox {device.inbox['id'][:10]}…  →  {relays}"
-            )
+            state = status.get(device.device_id) or {}
+            notes = []
+            if device.device_id != current_device_id:
+                # The arrow already marks this device; the note is about sync.
+                if not state.get("has_keys"):
+                    notes.append("no sync keys yet — update that device")
+                else:
+                    notes.append("history approved" if state.get("approved") else "not approved")
+                    if state.get("received"):
+                        notes.append(
+                            f"received {state['received']}/{state.get('expected') or '?'} items"
+                        )
+            lines = [
+                f"{device.name or 'unnamed device'}  ·  {device.device_id[:10]}{mine}"
+            ]
+            if notes:
+                lines.append(f"    {' · '.join(notes)}")
+            lines.append(f"    mailbox {device.inbox['id'][:10]}…  →  {relays}")
+            item = QListWidgetItem("\n".join(lines))
             item.setToolTip(device.device_id)
             listing.addItem(item)
         layout.addWidget(listing)
+
+        if app is not None and requests:
+            layout.addWidget(QLabel("Waiting for your approval"))
+            for request in requests:
+                row = QHBoxLayout()
+                label = QLabel(
+                    f"{request.get('name') or 'unnamed device'} "
+                    f"({request['device_id'][:10]}) asked for {describe_range(request.get('since'))}"
+                )
+                approve = QPushButton("Approve")
+                approve.clicked.connect(
+                    lambda _=False, device_id=request["device_id"], since=request.get("since"): app.approve_history_request(
+                        device_id, since
+                    )
+                )
+                deny = QPushButton("Deny")
+                deny.setObjectName("secondary")
+                deny.clicked.connect(
+                    lambda _=False, device_id=request["device_id"]: app.deny_history_request(
+                        device_id
+                    )
+                )
+                row.addWidget(label, stretch=1)
+                row.addWidget(approve)
+                row.addWidget(deny)
+                layout.addLayout(row)
+            layout.addWidget(
+                QLabel(
+                    "Approving sends that device the history it asked for, and mirrors\n"
+                    "your future sent messages to it. A stolen seed phrase cannot do this\n"
+                    "on its own: it needs a click here."
+                )
+            )
+
+        if app is not None:
+            layout.addWidget(QLabel("Catch up a new device"))
+            self.request_button = QPushButton("Request history from my other devices…")
+            self.request_button.setObjectName("secondary")
+            self.request_button.clicked.connect(app.request_history_from_devices)
+            layout.addWidget(self.request_button)
+            layout.addWidget(
+                QLabel(
+                    "Ask your other devices for the past. Each one asks you to approve\n"
+                    "the request there, and sends the range they agree to."
+                )
+            )
+
         layout.addWidget(
             QLabel(
-                "History is not synced automatically: a newly added device sees\n"
-                "messages sent after it joined, plus whatever you hand it below."
+                "A device shows what it holds: messages sent while it was registered,\n"
+                "plus whatever has been approved for it."
             )
         )
 
@@ -762,10 +835,14 @@ class App(QWidget):
         self.worker.messages_received.connect(self._on_messages)
         self.worker.status_changed.connect(self.main_screen.set_status)
         self.worker.error_occurred.connect(self._on_error)
-        self.worker.task_finished.connect(lambda *_: self.refresh())
+        self.worker.task_finished.connect(lambda *_: self._after_sync())
         self.worker.relays_changed.connect(self._on_relays_changed)
         self.worker.submit("provision", self.client.provision)
         self.worker.start()
+
+    def _after_sync(self) -> None:
+        self.refresh()
+        self._note_pending_requests()
 
     def _restart_worker(self) -> None:
         if self.client is None:
@@ -855,10 +932,67 @@ class App(QWidget):
             app=self,
             cache_bytes=self.client.store.local_blob_bytes(),
             cache_chunks=self._cached_chunk_count(),
+            sync_status=self.client.sync_status(),
+            requests=self.client.history_requests(),
         ).exec_()
 
     def _cached_chunk_count(self) -> int:
         return self.client.store.local_blob_count()
+
+    # -- device sync ------------------------------------------------------
+
+    def request_history_from_devices(self) -> None:
+        """Ask this account's other devices for the past."""
+        if self.client is None or self.worker is None:
+            return
+        since = ask_range(self, "Request history")
+        if since is False:
+            return
+        self.main_screen.set_status("asking your other devices…")
+        self.worker.submit(
+            "request_history",
+            self.client.request_history,
+            since,
+            callback=lambda result: self.history_done.emit("request", result),
+        )
+
+    def approve_history_request(self, device_id: str, since_ms) -> None:
+        """Approve a device and send it the history it asked for."""
+        if self.client is None or self.worker is None:
+            return
+        self.main_screen.set_status("sending history…")
+        self.worker.submit(
+            "approve_history",
+            self.client.approve_history,
+            device_id,
+            since_ms,
+            callback=lambda result: self.history_done.emit("approve", result),
+        )
+
+    def deny_history_request(self, device_id: str) -> None:
+        if self.client is None:
+            return
+        self.client.deny_history(device_id)
+        self.main_screen.set_status("request denied")
+
+    def _note_pending_requests(self) -> None:
+        """Tell the user, without a modal, that a device is waiting on them."""
+        if self.client is None:
+            return
+        try:
+            pending = self.client.history_requests()
+        except Exception:
+            return
+        if not pending:
+            self._notified_requests = set()
+            return
+        seen = getattr(self, "_notified_requests", set())
+        fresh = [item for item in pending if item["device_id"] not in seen]
+        if not fresh:
+            return
+        self._notified_requests = seen | {item["device_id"] for item in fresh}
+        names = ", ".join(item["name"] or item["device_id"][:8] for item in fresh)
+        self.main_screen.set_status(f"{names} is asking for your history — open Devices")
 
     # -- history files ----------------------------------------------------
 
@@ -951,6 +1085,38 @@ class App(QWidget):
     def _history_finished(self, kind: str, result) -> None:
         if result is None:
             self.main_screen.set_status("offline")
+            return
+        if kind == "request":
+            asked = result or []
+            if asked:
+                self.main_screen.set_status(
+                    f"asked {len(asked)} device(s) — approve the request there"
+                )
+                QMessageBox.information(
+                    self,
+                    "History requested",
+                    "Asked your other device(s) for the past.\n\n"
+                    "Open noknowledge there and approve the request in My devices — "
+                    "that click is what authorises the transfer.",
+                )
+            else:
+                self.main_screen.set_status("no other device could be asked")
+            return
+        if kind == "approve":
+            if result is None:
+                self.main_screen.set_status("offline")
+                return
+            self.main_screen.set_status(
+                f"sent {result['items']} item(s)"
+            )
+            QMessageBox.information(
+                self,
+                "History approved",
+                f"Sent {result['items']} item(s) to that device"
+                + (f" ({result['skipped']} attachment(s) were over budget)." if result.get("skipped") else ".")
+                + "\n\nFrom now on your sent messages mirror to it too.",
+            )
+            self.refresh()
             return
         if kind == "export":
             self.main_screen.set_status(f"exported to {os.path.basename(result['path'])}")

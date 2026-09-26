@@ -6,6 +6,7 @@ than failing: the core and relay suites must pass everywhere.
 
 import os
 import threading
+import time
 
 import pytest
 
@@ -651,5 +652,111 @@ def test_gui_imports_history_and_merges_messages(qapp, tmp_path, monkeypatch):
         messages = window.client.messages(BOB_A)
         assert [message["body"]["text"] for message in messages] == ["from the other device"]
         assert window.identity is not None and window.identity.identity_id == identity.identity_id
+    finally:
+        window.close()
+
+
+# -- device sync UI --------------------------------------------------------
+
+
+def test_devices_dialog_shows_pending_history_requests(qapp, tmp_path, monkeypatch):
+    from PyQt5.QtWidgets import QLabel, QPushButton
+
+    from noknowledge.gui.app import DevicesDialog
+    from noknowledge.core.devices import DeviceEntry
+
+    devices = [
+        DeviceEntry(
+            device_id="me-identifier-here",
+            inbox={"id": "mailbox-mine", "w": "token"},
+            relays=["https://relay.example"],
+            bundle_id="bundle-mine",
+            name="laptop",
+        ),
+        DeviceEntry(
+            device_id="new-identifier-here",
+            inbox={"id": "mailbox-new", "w": "token"},
+            relays=["https://relay.example"],
+            bundle_id="bundle-new",
+            name="phone",
+        ),
+    ]
+    clicks: list = []
+
+    class StubApp:
+        def approve_history_request(self, device_id, since):
+            clicks.append(("approve", device_id, since))
+
+        def deny_history_request(self, device_id):
+            clicks.append(("deny", device_id))
+
+        def request_history_from_devices(self):
+            clicks.append(("request",))
+
+        def export_history(self):
+            clicks.append(("export",))
+
+        def import_history(self):
+            clicks.append(("import",))
+
+    dialog = DevicesDialog(
+        devices,
+        None,
+        "me-identifier-here",
+        app=StubApp(),
+        sync_status=[
+            {"device_id": "new-identifier-here", "has_keys": True, "approved": False},
+        ],
+        requests=[
+            {
+                "device_id": "new-identifier-here",
+                "name": "phone",
+                "since": int((time.time() - 30 * 24 * 3600) * 1000),
+            }
+        ],
+    )
+    try:
+        listing = dialog.findChild(QListWidget)
+        assert listing is not None
+        text = "\n".join(listing.item(i).text() for i in range(listing.count()))
+        assert "not approved" in text
+        assert text.count("this device") == 1
+
+        buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+        assert "Approve" in buttons and "Deny" in buttons
+        buttons["Approve"].click()
+        assert clicks == [("approve", "new-identifier-here", clicks[0][2])]
+        assert "the last 30 days" in " ".join(
+            label.text() for label in dialog.findChildren(QLabel)
+        )
+    finally:
+        dialog.close()
+
+
+def test_describe_range_wording():
+    from noknowledge.gui.app import describe_range
+
+    assert describe_range(0) == "everything"
+    assert describe_range(None) == "everything"
+    assert describe_range(int((time.time() - 30 * 24 * 3600) * 1000)) == "the last 30 days"
+    assert describe_range(int((time.time() - 24 * 3600) * 1000)) == "the last 1 day"
+
+
+def test_gui_notes_a_pending_history_request(qapp, tmp_path, monkeypatch):
+    """A device asking for history must be visible without opening a dialog."""
+    window, _ = _app_with_contacts(tmp_path, monkeypatch, [{"id": BOB_A, "nickname": "Bob"}])
+    try:
+        monkeypatch.setattr(
+            window.client,
+            "history_requests",
+            lambda: [{"device_id": "phone-id", "name": "phone", "since": 0}],
+        )
+        window._after_sync()
+        assert "asking for your history" in window.main_screen.status.text()
+
+        # Repeated polls must not repeat the message.
+        window.main_screen.status.setText("")
+        window._after_sync()
+        assert window.main_screen.status.text() == ""
     finally:
         window.close()

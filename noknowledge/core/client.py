@@ -31,6 +31,7 @@ from noknowledge.core.devices import (
     open_device_list,
     seal_device_list,
 )
+from noknowledge.core import sync as sync_mod
 from noknowledge.core.session import Session
 from noknowledge.crypto import x3dh
 from noknowledge.crypto.encoding import b64d, b64e
@@ -103,6 +104,12 @@ class Client:
         self._bundle_id: str | None = None
         self._card: ContactCard | None = None
         self._device_id: str | None = None
+        # Device sync: sibling key records, the device list we last fetched, and
+        # the message index of an in-flight back-fill.
+        self._sibling_keys: dict[str, dict] = {}
+        self._device_list_cache = None
+        self._device_list_cache_ts = 0.0
+        self._sync_message_index = None
 
     # -- provisioning -----------------------------------------------------
 
@@ -211,12 +218,33 @@ class Client:
             # A relay refusing the record must not break provisioning; senders
             # simply fall back to the inbox in our contact card.
             pass
+        self._device_list_cache = listing
+        self._device_list_cache_ts = time.time()
+        # Our own sync keys, so sibling devices can seal records to us.
+        sync_mod.publish_device_keys(self)
 
     @property
     def device_list_address(self) -> str:
         return device_list_id(
             self.identity.ed_public_bytes, self.identity.x_public_bytes
         )
+
+    def own_device_list(self, max_age: float = 300.0) -> DeviceList | None:
+        """This account's device list, refetched at most every `max_age` seconds.
+
+        Mirroring and receipt handling look siblings up constantly, so going to
+        the relay every time would put a round trip in the middle of a send.
+        """
+        if (
+            self._device_list_cache is not None
+            and time.time() - self._device_list_cache_ts < max_age
+        ):
+            return self._device_list_cache
+        listing = self._fetch_own_device_list()
+        if listing is not None:
+            self._device_list_cache = listing
+            self._device_list_cache_ts = time.time()
+        return listing or self._device_list_cache
 
     def _fetch_own_device_list(self) -> DeviceList | None:
         try:
@@ -614,7 +642,19 @@ class Client:
         )
         for device, blob in blobs:
             self._queue_outbox(contact, device, message_id, blob)
+        self._mirror_sent(contact_id, message_id)
         return message_id
+
+    def _mirror_sent(self, contact_id: str, message_id: str) -> None:
+        """Copy a message we just sent to the devices we approved."""
+        row = self.store.get_message(message_id)
+        if row is None:
+            return
+        try:
+            sync_mod.mirror_message(self, contact_id, row)
+        except Exception:
+            # Mirroring is a convenience: never fail a send over it.
+            pass
 
     def send_file(self, contact_id: str, path: str, caption: str = "") -> str:
         self._ensure_provisioned()
@@ -678,6 +718,7 @@ class Client:
         )
         for device, blob in blobs:
             self._queue_outbox(contact, device, message_id, blob)
+        self._mirror_sent(contact_id, message_id)
         return message_id
 
     def _queue_outbox(
@@ -739,7 +780,18 @@ class Client:
         for item in fetched:
             max_seq[item.relay] = max(max_seq.get(item.relay, 0), item.seq)
             try:
-                message = self._handle_blob(item.blob)
+                if sync_mod.channel.is_device_record(item.blob):
+                    # A record from another device of this account. Its own
+                    # failure modes (unknown device, bad signature) must not
+                    # block the mailbox, but must not be acknowledged either:
+                    # a truncated transfer is resumed later.
+                    message = None
+                    try:
+                        sync_mod.handle_record(self, item.blob)
+                    except Exception:
+                        message = None
+                else:
+                    message = self._handle_blob(item.blob)
             except Exception:
                 message = None
             if message:
@@ -899,6 +951,12 @@ class Client:
                 self.store.update_message(target, state=state)
                 # One row per device copy, all prefixed by the message id.
                 self.store.outbox_remove_for_message(target)
+                row = self.store.get_message(target)
+                if row is not None:
+                    try:
+                        sync_mod.mirror_state(self, contact["id"], row)
+                    except Exception:
+                        pass
             return None
 
         return None
@@ -934,6 +992,48 @@ class Client:
         # remote_id; referencing our local id would be meaningless to them.
         target = message.get("remote_id") or message_id
         self._send_receipt(contact, target, kind="read")
+        # Our other devices should show this as read too.
+        updated = dict(message)
+        updated["state"] = "read"
+        try:
+            sync_mod.mirror_state(self, contact_id, updated)
+        except Exception:
+            pass
+
+    # -- device sync ------------------------------------------------------
+
+    def request_history(self, since_ms: int | None = None) -> list[str]:
+        """Ask this account's other devices for the past."""
+        self._ensure_provisioned()
+        return sync_mod.request_history(self, since_ms=since_ms)
+
+    def history_requests(self) -> list[dict]:
+        """Devices waiting for a human here to approve their history request."""
+        self._ensure_provisioned()
+        return sync_mod.pending_requests(self)
+
+    def approve_history(self, device_id: str, since_ms: int | None = None) -> dict:
+        """Approve a device and send it the history it asked for."""
+        self._ensure_provisioned()
+        return sync_mod.approve_device(self, device_id, since_ms=since_ms)
+
+    def deny_history(self, device_id: str) -> None:
+        self._ensure_provisioned()
+        sync_mod.deny_device(self, device_id)
+
+    def revoke_history_approval(self, device_id: str) -> None:
+        """Stop sending mirrors and history to a device we approved."""
+        self._ensure_provisioned()
+        sync_mod.revoke_approval(self, device_id)
+
+    def approved_devices(self) -> list[str]:
+        self._ensure_provisioned()
+        return sync_mod.approved_devices(self)
+
+    def sync_status(self) -> list[dict]:
+        """Per-sibling sync state, for the Devices dialog."""
+        self._ensure_provisioned()
+        return list(sync_mod.iter_status(self))
 
     # -- reading ----------------------------------------------------------
 

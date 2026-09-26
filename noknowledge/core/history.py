@@ -39,7 +39,12 @@ DEFAULT_BUDGET_BYTES = 100 * 1024 * 1024
 PBKDF2_ITERATIONS = 600_000
 
 #: Message states, ranked so a merge can never resurrect "unread".
-_STATE_RANK = {"received": 0, "sent": 0, None: 0, "delivered": 1, "read": 2}
+STATE_RANK = {"received": 0, "sent": 0, None: 0, "delivered": 1, "read": 2}
+
+
+def state_rank(state) -> int:
+    """How far along a message is, so a merge never moves it backwards."""
+    return STATE_RANK.get(state, 0)
 
 
 class HistoryError(Exception):
@@ -49,7 +54,7 @@ class HistoryError(Exception):
 # -- collection ------------------------------------------------------------
 
 
-def _contact_item(contact: dict) -> dict:
+def contact_item(contact: dict) -> dict:
     return {
         "id": contact["id"],
         "isign": b64e(contact["isign"]),
@@ -63,7 +68,7 @@ def _contact_item(contact: dict) -> dict:
     }
 
 
-def _message_item(contact_id: str, message: dict) -> dict:
+def message_item(contact_id: str, message: dict) -> dict:
     return {
         "contact_id": contact_id,
         "direction": message["direction"],
@@ -122,12 +127,12 @@ def build_bundle(
     since_ms = int(since_ms or 0)
 
     contacts = [
-        _contact_item(contact) for contact in client.store.list_contacts(identity_id)
+        contact_item(contact) for contact in client.store.list_contacts(identity_id)
     ]
     messages: list[dict] = []
     for message in client.store.list_all_messages(identity_id):
         if since_ms <= int(message.get("ts") or 0) <= until_ms:
-            messages.append(_message_item(message["contact_id"], message))
+            messages.append(message_item(message["contact_id"], message))
 
     chunks: list[dict] = []
     skipped: list[dict] = []
@@ -217,37 +222,47 @@ def _merge_contact(client, item: dict) -> bool:
     return True
 
 
-def merge_bundle(client, bundle: dict) -> dict:
-    """Merge a bundle into the local store. Idempotent."""
-    identity_id = client.identity_id
-    counts = {"contacts": 0, "messages": 0, "updates": 0, "chunks": 0}
+def new_counts() -> dict:
+    return {"contacts": 0, "messages": 0, "updates": 0, "chunks": 0}
 
-    for item in bundle.get("contacts") or []:
+
+def message_index(client) -> dict[tuple, dict]:
+    """Index every message we already hold, so a merge stays linear."""
+    known: dict[tuple, dict] = {}
+    for message in client.store.list_all_messages(client.identity_id):
+        known[message_key(message)] = message
+    return known
+
+
+def merge_contacts(client, items, counts: dict) -> None:
+    for item in items or []:
         if _merge_contact(client, item):
             counts["contacts"] += 1
 
-    # Index what we already have, once, so a large bundle stays linear.
-    known: dict[tuple, dict] = {}
-    for contact in client.store.list_contacts(identity_id):
-        for message in client.store.list_messages(identity_id, contact["id"]):
-            known[message_key(message)] = message
 
-    for item in bundle.get("messages") or []:
+def merge_messages(client, items, known: dict[tuple, dict], counts: dict) -> None:
+    """Merge message items, deduplicating on the shared message key.
+
+    ``known`` is the index from :func:`message_index`; it is updated in place so
+    a stream of items (device back-fill) stays linear.
+    """
+    for item in items or []:
         if not item.get("contact_id"):
             continue
         key = message_key(item)
         existing = known.get(key)
         if existing is not None:
             incoming = item.get("state")
-            if _STATE_RANK.get(incoming, 0) > _STATE_RANK.get(existing.get("state"), 0):
+            if state_rank(incoming) > state_rank(existing.get("state")):
                 client.store.update_message(existing["id"], state=incoming)
                 counts["updates"] += 1
             continue
-        message_id = os.urandom(16).hex()
+        # A mirrored message brings its own id so both devices agree on it.
+        message_id = str(item.get("id") or os.urandom(16).hex())
         client.store.add_message(
             {
                 "id": message_id,
-                "identity_id": identity_id,
+                "identity_id": client.identity_id,
                 "contact_id": item["contact_id"],
                 "direction": item.get("direction") or "received",
                 "type": item.get("type") or "text",
@@ -261,7 +276,9 @@ def merge_bundle(client, bundle: dict) -> dict:
         known[key] = client.store.get_message(message_id)
         counts["messages"] += 1
 
-    for chunk in bundle.get("chunks") or []:
+
+def merge_chunks(client, items, counts: dict) -> None:
+    for chunk in items or []:
         chunk_id = str(chunk.get("id") or "")
         if not chunk_id:
             continue
@@ -273,6 +290,14 @@ def merge_bundle(client, bundle: dict) -> dict:
             client.store.put_local_blob(chunk_id, ciphertext)
             counts["chunks"] += 1
 
+
+def merge_bundle(client, bundle: dict) -> dict:
+    """Merge a bundle into the local store. Idempotent."""
+    counts = new_counts()
+    merge_contacts(client, bundle.get("contacts"), counts)
+    known = message_index(client)
+    merge_messages(client, bundle.get("messages"), known, counts)
+    merge_chunks(client, bundle.get("chunks"), counts)
     return counts
 
 
