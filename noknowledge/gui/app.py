@@ -12,7 +12,7 @@ import sys
 from collections import Counter
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QFontDatabase, QPainter, QPixmap
+from PyQt5.QtGui import QFont, QFontDatabase, QKeySequence, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QShortcut,
     QSpinBox,
     QSplitter,
     QStackedWidget,
@@ -37,7 +38,7 @@ from PyQt5.QtWidgets import (
 )
 
 from noknowledge.crypto.identity import Identity, IdentityError
-from noknowledge.gui.session import build_client, identity_path
+from noknowledge.gui.session import build_client, identity_is_encrypted, identity_path
 from noknowledge.gui.settings import GuiSettings, data_dir
 from noknowledge.gui.worker import Worker
 
@@ -371,14 +372,18 @@ class RecoverScreen(QWidget):
 
 class UnlockScreen(QWidget):
     unlocked = pyqtSignal(str)
+    switch_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
         layout.addStretch()
-        title = QLabel("Unlock")
+        title = QLabel("Locked")
         title.setObjectName("title")
         layout.addWidget(title, alignment=Qt.AlignCenter)
+        self.hint = QLabel("")
+        self.hint.setObjectName("subtitle")
+        layout.addWidget(self.hint, alignment=Qt.AlignCenter)
         self.passphrase = QLineEdit()
         self.passphrase.setEchoMode(QLineEdit.Password)
         self.passphrase.setPlaceholderText("passphrase")
@@ -391,7 +396,30 @@ class UnlockScreen(QWidget):
         button.setFixedWidth(320)
         button.clicked.connect(lambda: self.unlocked.emit(self.passphrase.text()))
         layout.addWidget(button, alignment=Qt.AlignCenter)
+        self.switch = QPushButton("Use a different identity…")
+        self.switch.setObjectName("secondary")
+        self.switch.setFixedWidth(320)
+        # Not `self.switch_requested.emit` directly: Qt hands `clicked` a
+        # `checked` bool, which a zero-argument signal's emit would reject.
+        self.switch.clicked.connect(lambda: self.switch_requested.emit())
+        layout.addWidget(self.switch, alignment=Qt.AlignCenter)
         layout.addStretch()
+        self.prepare(encrypted=True)
+
+    def prepare(self, encrypted: bool = True) -> None:
+        """Describe what unlocking this identity actually takes."""
+        if encrypted:
+            self.hint.setText("Enter your passphrase to open your account.")
+            self.passphrase.setEnabled(True)
+            self.passphrase.setPlaceholderText("passphrase")
+        else:
+            self.hint.setText(
+                "This identity has no passphrase, so it is locked only in memory.\n"
+                "Press Unlock to continue."
+            )
+            self.passphrase.setEnabled(False)
+            self.passphrase.setPlaceholderText("(no passphrase set)")
+        self.passphrase.clear()
 
 
 # -- main screen ----------------------------------------------------------
@@ -434,6 +462,12 @@ class MainScreen(QWidget):
             "Every device on your account receives its own encrypted copy"
         )
         self.devices_button.clicked.connect(app.show_devices)
+        self.lock_button = QPushButton("Lock")
+        self.lock_button.setObjectName("secondary")
+        self.lock_button.setToolTip(
+            "Sign out: stop polling, drop your keys from memory and lock the app\n(Ctrl+L)"
+        )
+        self.lock_button.clicked.connect(app.lock)
 
         toolbar.addWidget(self.my_card)
         toolbar.addWidget(add)
@@ -443,6 +477,7 @@ class MainScreen(QWidget):
         toolbar.addWidget(self.copy_id)
         toolbar.addWidget(self.devices_button)
         toolbar.addStretch()
+        toolbar.addWidget(self.lock_button)
         toolbar.addWidget(self.status)
         layout.addLayout(toolbar)
 
@@ -495,6 +530,21 @@ class MainScreen(QWidget):
     def set_status(self, text: str) -> None:
         self.status.setText(text)
 
+    def reset(self) -> None:
+        """Forget everything on screen, for locking or switching identity."""
+        self.contacts.blockSignals(True)
+        try:
+            self.contacts.clear()
+        finally:
+            self.contacts.blockSignals(False)
+        self.identity_label.setText("")
+        self.header.setText("Select a contact")
+        self.header_id.setText("")
+        self.chat.setHtml("")
+        self.attachments.clear()
+        self.input.clear()
+        self.status.setText("locked")
+
 
 # -- controller -----------------------------------------------------------
 
@@ -515,6 +565,7 @@ class App(QWidget):
         self._pending_identity: Identity | None = None
         self._pending_passphrase = ""
         self._refreshing = False
+        self._identity_encrypted = False
 
         self.stack = QStackedWidget()
         outer = QVBoxLayout(self)
@@ -552,7 +603,10 @@ class App(QWidget):
             lambda: self.stack.setCurrentWidget(self.welcome)
         )
         self.unlock.unlocked.connect(self._on_unlock)
+        self.unlock.switch_requested.connect(self.switch_identity)
         self.attachment_ready.connect(self._save_attachment)
+        self.lock_shortcut = QShortcut(QKeySequence("Ctrl+L"), self)
+        self.lock_shortcut.activated.connect(self.lock)
 
         self._bootstrap()
 
@@ -567,6 +621,7 @@ class App(QWidget):
             identity = Identity.load(path)
         except IdentityError as exc:
             if "passphrase" in str(exc).lower():
+                self.unlock.prepare(identity_is_encrypted(path))
                 self.stack.setCurrentWidget(self.unlock)
                 return
             QMessageBox.critical(self, "Identity", str(exc))
@@ -616,6 +671,9 @@ class App(QWidget):
 
     def _start_client(self, identity: Identity) -> None:
         self.identity = identity
+        self._identity_encrypted = identity_is_encrypted(
+            identity_path(self.directory)
+        )
         self.main_screen.identity_label.setText(identity.identity_id)
         self.settings.last_name = identity.label or ""
         self.settings.save(self.directory)
@@ -656,6 +714,56 @@ class App(QWidget):
             QMessageBox.critical(self, "Settings", str(exc))
             return
         self._start_worker()
+
+    # -- lock and switch --------------------------------------------------
+
+    def _teardown_client(self) -> None:
+        """Stop polling and drop the keys and history from memory."""
+        if self.worker is not None:
+            self.worker.stop()
+            self.worker.wait(3000)
+            self.worker = None
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            self.client = None
+        self.identity = None
+        self.current_contact = None
+        self.main_screen.reset()
+
+    def lock(self) -> None:
+        """Sign out: back to the unlock screen, with nothing decrypted in RAM."""
+        if self.client is None:
+            return
+        self._teardown_client()
+        self.unlock.prepare(self._identity_encrypted)
+        self.stack.setCurrentWidget(self.unlock)
+
+    def switch_identity(self) -> None:
+        """Sign out and offer to create or recover another identity.
+
+        The desktop keeps one identity per data directory, so this replaces the
+        stored one; the old account comes back from its seed phrase, and its
+        history is still in local.db under that identity id.
+        """
+        answer = QMessageBox.question(
+            self,
+            "Use a different identity",
+            "Your current account will be signed out and its identity file "
+            "replaced if you create or recover another one.\n\n"
+            "You can always come back with the old seed phrase, and its history "
+            "stays on this machine.\n\nContinue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._teardown_client()
+        self._pending_identity = None
+        self._pending_passphrase = ""
+        self.stack.setCurrentWidget(self.welcome)
 
     # -- actions ----------------------------------------------------------
 
@@ -883,14 +991,7 @@ class App(QWidget):
         self.main_screen.set_status(f"offline: {message[:60]}")
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        if self.worker is not None:
-            self.worker.stop()
-            self.worker.wait(3000)
-        if self.client is not None:
-            try:
-                self.client.close()
-            except Exception:
-                pass
+        self._teardown_client()
         super().closeEvent(event)
 
 

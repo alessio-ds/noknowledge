@@ -79,6 +79,19 @@ uv run python -m noknowledge.server --host 127.0.0.1 --port 8000
 uv run python -m noknowledge.gui
 ```
 
+### Locking the app
+
+**Lock** in the toolbar (or `Ctrl+L`) signs you out: polling stops, the identity
+and everything decrypted is dropped from memory, and you are returned to the
+unlock screen. Unlocking takes your passphrase, or nothing at all if you did not
+set one — in that case the identity file is unencrypted and the lock only clears
+memory. From the unlock screen, **Use a different identity…** goes back to the
+welcome screen so you can create or restore another account. The desktop keeps
+one identity per data directory, so that replaces the stored file: the old
+account comes back from its seed phrase, and its history stays in `local.db`
+under its identity id. Two accounts at once means two data directories —
+`NK_DATA_DIR=/tmp/nk-alice` and `NK_DATA_DIR=/tmp/nk-bob`.
+
 ### Local key storage
 
 The local database key is kept in the **OS keyring** by default. On headless

@@ -450,3 +450,105 @@ def test_card_dialog_shows_the_qr(qapp):
         assert dialog.text.toPlainText() == card.to_string()
     finally:
         dialog.close()
+
+# -- lock and switch identity ---------------------------------------------
+
+
+def test_identity_is_encrypted_reads_the_vault(tmp_path):
+    from noknowledge.crypto.identity import Identity
+    from noknowledge.gui.session import identity_is_encrypted
+
+    plain = tmp_path / "plain.nk"
+    guarded = tmp_path / "guarded.nk"
+    Identity.generate("a")[0].save(str(plain))
+    Identity.generate("b")[0].save(str(guarded), "secret")
+
+    assert identity_is_encrypted(str(plain)) is False
+    assert identity_is_encrypted(str(guarded)) is True
+    # An unreadable file must not promise that an empty passphrase will do.
+    assert identity_is_encrypted(str(tmp_path / "missing.nk")) is True
+
+
+def test_lock_signs_out_and_can_unlock_again(qapp, tmp_path, monkeypatch):
+    window, identity = _app_with_contacts(
+        tmp_path,
+        monkeypatch,
+        [{"id": BOB_A, "nickname": "Bob"}],
+    )
+    try:
+        assert window.stack.currentWidget() is window.main_screen
+        assert window.client is not None
+        assert window.main_screen.contacts.count() == 1
+
+        window.lock()
+
+        # Back to the unlock screen, with no keys, client or history in memory.
+        assert window.stack.currentWidget() is window.unlock
+        assert window.client is None
+        assert window.worker is None
+        assert window.identity is None
+        assert window.main_screen.contacts.count() == 0
+        assert window.main_screen.identity_label.text() == ""
+        assert window.main_screen.chat.toPlainText() == ""
+        # This identity has no passphrase, so the screen says exactly that.
+        assert window.unlock.passphrase.isEnabled() is False
+        assert "no passphrase" in window.unlock.hint.text()
+
+        # Unlocking again restores the same account.
+        window.unlock.unlocked.emit("")
+        assert window.stack.currentWidget() is window.main_screen
+        assert window.identity is not None
+        assert window.identity.identity_id == identity.identity_id
+        assert window.main_screen.contacts.count() == 1
+    finally:
+        window.close()
+
+
+def test_lock_clears_a_live_conversation(qapp, tmp_path, monkeypatch):
+    """A locked window must not leave decrypted messages on screen."""
+    window, _ = _app_with_contacts(
+        tmp_path,
+        monkeypatch,
+        [{"id": BOB_A, "nickname": "Bob"}],
+    )
+    try:
+        window.main_screen.contacts.setCurrentRow(0)
+        assert window.current_contact == BOB_A
+
+        window.lock()
+
+        assert window.current_contact is None
+        assert window.main_screen.header.text() == "Select a contact"
+        assert "Bob" not in window.main_screen.chat.toPlainText()
+    finally:
+        window.close()
+
+
+def test_switching_identity_is_cancellable(qapp, tmp_path, monkeypatch):
+    from PyQt5.QtWidgets import QMessageBox
+
+    window, identity = _app_with_contacts(
+        tmp_path,
+        monkeypatch,
+        [{"id": BOB_A, "nickname": "Bob"}],
+    )
+    try:
+        window.lock()
+        monkeypatch.setattr(
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
+        )
+        # Clicking, not calling, so the signal wiring is exercised too.
+        window.unlock.switch.click()
+        # Declining the warning leaves us exactly where we were.
+        assert window.stack.currentWidget() is window.unlock
+
+        monkeypatch.setattr(
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+        )
+        window.unlock.switch.click()
+        assert window.stack.currentWidget() is window.welcome
+        assert window.client is None
+        assert window.identity is None
+        assert identity.identity_id  # the old identity is only signed out, not deleted
+    finally:
+        window.close()
