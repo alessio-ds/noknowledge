@@ -31,9 +31,8 @@ even if every relay is hostile.
   the design does not add cover traffic or per-message delays.
 - **Endpoint security.** Malware or an attacker with the device and an unlocked
   vault defeats all of this. Local storage encryption protects data at rest only.
-- **Groups, metadata-private discovery, history sync.** See `PLAN.md` §0.
-  Multiple devices are supported, but the seed restores identity, not message
-  history: a newly added device sees only what is sent after it joins.
+- **Groups and metadata-private discovery.** See `PLAN.md` §0. History sync *is*
+  supported, but under human control: see A8 below for what a stolen seed gets.
 - **Deniability against a recipient.** A recipient can prove to a third party who
   sent a message, because the first message carries an Ed25519 signature.
 
@@ -98,6 +97,36 @@ relay and `sid`/mailbox ids are pseudonymous, collusion yields a set of
 pseudonymous mailboxes and their traffic patterns, not real identities. Residual:
 statistical linkage if a party is deanonymized out of band.
 
+### A8 — Thief with the seed phrase
+
+Someone who obtains the 24 words can restore the identity, register a device and
+read everything sent to the account from then on. That is inherent: the seed *is*
+the account, and no protocol can distinguish the rightful owner from a holder of
+the key.
+
+What the design can do is keep the **past** out of their hands:
+
+| Data | Seed alone | Seed plus a human clicking Approve on an existing device |
+|---|---|---|
+| New incoming messages | yes (unavoidable) | — |
+| Messages sent from other devices (mirrors) | no | yes |
+| Past history | no | yes, within the approved range |
+| Attachments | no | yes, subject to the budget |
+
+The gate is the `approval` record in §10 of the protocol: a device sends data only
+to devices its human approved. A thief's device may ask, and the legitimate
+devices will show the request — including the device id and the name it claims,
+which is what the owner compares against — but nothing moves until a person on
+that device approves. Revoking approval stops mirrors immediately.
+
+**Residual risk.** A thief can still: read future traffic, send messages as the
+account, register devices (which the owner will see in *My devices* and can
+identify as unknown), and be approved by a careless owner who clicks Approve on a
+request they did not expect. The defence is the same as for any seed: keep it
+safe, and treat an unexpected approval prompt as an incident.
+
+---
+
 ### A7 — Relay operator who is also the recipient
 If you talk to someone who runs the relay, they can see that a mailbox is
 receiving traffic (though not the sender's identity). Mailbox rotation is the
@@ -124,6 +153,10 @@ mitigation, deferred to hardening.
 | Prekey exhaustion | Bundles replenish; X3DH tolerates missing OPK (3-DH fallback) |
 | Relay injects a device into an account | Device list is signed by the account key; a relay cannot add a mailbox |
 | Relay links an account's mailboxes | Device list is sealed under a key derived from the account's public keys; the relay sees only a hash address and an opaque box |
+| Relay forges or alters a device record | Every device record is signed by the sending device and every header byte is AEAD associated data; ordering is bound by a per-item key label |
+| Relay truncates a history transfer | Item count and a running hash chain are checked against the `complete` record; a short transfer is reported, not accepted silently |
+| A thief with the seed pulls history | A device sends data only to devices its human approved; a request alone transfers nothing |
+| A record is replayed | Transfer ids are remembered; every merge is idempotent, so a replay changes nothing |
 
 ---
 
@@ -178,3 +211,6 @@ migrating to other relays and re-delivering from the outbox.
 | Multi-device delivery | test that a second device on one account receives a copy, and that a recovered device joins the list and starts receiving |
 | Device list privacy | test that the stored record leaks no identity keys, mailbox ids or write tokens |
 | Legacy fallback | test that a peer with no published device list is still reached at the card inbox |
+| Stolen seed cannot pull history | test that a restored device's request transfers nothing until a human approves, and that future traffic still arrives |
+| Device channel integrity | tests flip header bytes, forge the sender key, use the wrong recipient key, and truncate a transfer |
+| Mirroring | tests assert a sent message and a read state appear on the sibling device, in both directions, exactly once |

@@ -219,10 +219,37 @@ your contact card exactly as before.
 NK_DATA_DIR=/tmp/nk-alice-laptop NK_DISABLE_KEYRING=1 ./scripts/run_gui.sh
 ```
 
-**What does not come back:** message history. The seed restores your *identity*,
-not your logs — a newly added device receives everything sent after it joined,
-and history stays on the devices that already had it. Moving it is a planned
-feature with a concrete design: see [`docs/HISTORY_SYNC.md`](docs/HISTORY_SYNC.md).
+**What comes back, and what needs a click:** a restored device immediately
+receives new messages. Your **history and your sent messages need approval**: the
+new device asks, and an existing device shows you the request — with that device's
+id — until a person approves it there. See *History and your other devices* below.
+
+**What does not come back by itself:** the past, until you approve it, and
+anything sent while no device was online to receive it.
+
+### History and your other devices
+
+| You do this | What happens |
+|---|---|
+| Send a message from your laptop | Your phone shows it too, as sent, with matching ticks. |
+| Read a message on your phone | Your laptop marks it read. |
+| Restore your seed on a new device | It receives new messages at once. Press **Request history** in *My devices* to ask for the past (last 30 days by default, or 30/60/90/all). |
+| Approve that request on an old device | The past transfers, encrypted device to device, and mirroring turns on in both directions. |
+| Want less noise or a smaller footprint | Export an encrypted history file instead, on one device, and import it on the other. |
+
+**Why approval matters.** Your seed phrase *is* your account: anyone who has it
+can read everything sent to you from then on, and nothing can prevent that. What
+they cannot do is **take your past**. A device receives history or mirrors your
+sent messages only if a person on an approved device says so — so a stolen seed
+gets future traffic, never the archive. Approvals are per device, visible in
+*My devices*, and revocable.
+
+Under the hood it is a sealed device-to-device channel: each device has its own
+keys, published in an account-signed record, and records are sealed to that
+device's key with every header field authenticated ([`PROTOCOL.md`](PROTOCOL.md)
+§10). The relay carries the transfer as opaque mailbox writes and learns nothing.
+The full design, including what was rejected and why, is in
+[`docs/HISTORY_SYNC.md`](docs/HISTORY_SYNC.md).
 
 ## Testing
 
@@ -276,11 +303,12 @@ uv.lock     pinned, reproducible environment
 ## Scope
 
 **In:** 1:1 text, read/delivery receipts, encrypted attachments, multi-relay
-replication, federation, multiple devices per account, SOCKS5/Tor fail-closed
-mode.
+replication, federation, multiple devices per account, approval-gated history
+sync and live mirroring between your devices, encrypted history export/import,
+SOCKS5/Tor fail-closed mode.
 
-**Not yet:** group chats, history sync across devices, a public lookup
-directory, full P2P/DHT, and resistance to global traffic analysis.
+**Not yet:** group chats, a public lookup directory, full P2P/DHT, and resistance
+to global traffic analysis.
 
 ## License
 

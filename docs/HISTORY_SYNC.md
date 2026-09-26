@@ -1,7 +1,9 @@
 # History sync and live device mirroring
 
-**Status:** design agreed in outline, not implemented. Everything below needs no
-server change and keeps the relay zero-knowledge: it learns no content and no
+**Status:** implemented in the desktop and browser clients, tested across both
+(`tests/test_sync.py`, `test/sync.e2e.test.ts`, and the interop tests that pair a
+live Python device with a browser device). Everything below needed no server
+change and keeps the relay zero-knowledge: it learns no content and no
 sender↔recipient linkage.
 
 ## 1. What the user gets (the Gajim/XMPP shape)
@@ -49,26 +51,34 @@ So syncing means a device that holds plaintext actively handing it over.
 
 ### 4.1 Device keys (the missing piece)
 
-A device is currently just a mailbox. Give each device its own keypair, published
-in the **account-signed device list**, so any device of the account can verify
-another:
+A device used to be just a mailbox. Each device now has its own keypair, published
+in an **account-signed record of its own** — deliberately *not* in the device list.
+The device list's signed payload is rebuilt from its own fields by whoever parses
+it, so an unknown field is dropped and the signature then fails. Adding `sdev`
+there would have made 1.3.x clients reject the list and fall back to single-device
+delivery. A separate record keeps them working, and peers that only need routing
+never fetch it.
+
+The record lives at an address derived like the device list's, but including the
+device id, and is sealed the same way:
 
 ```json
 {
+  "v": 1,
+  "account": "26-char identity id",
+  "isign": "b64(32)", "idh": "b64(32)",
   "device": "b64(16)",
-  "inbox": {"id": "b64(16)", "w": "b64(32)"},
-  "relays": ["https://relay.example"],
-  "bundle": "b64(16)",
-  "name": "laptop",
   "sdev":   "b64(32)",   // device Ed25519 key — authenticates records from it
-  "sagree": "b64(32)"    // device X25519 key — lets siblings encrypt to it
+  "sagree": "b64(32)",   // device X25519 key — lets siblings encrypt to it
+  "bundle_id": "<record address>",
+  "sig": "b64(64)"
 }
 ```
 
 Generated at provision; private halves live in the local encrypted store. The
 account signature means a relay cannot inject a device and a device cannot
-impersonate a sibling. Unknown fields are ignored by current parsers, so this is
-additive; an entry without `sagree` simply cannot sync yet.
+impersonate a sibling. A device whose record is absent simply cannot sync yet, and
+the UI says so.
 
 ### 4.2 Live mirroring — "sent from one device, visible on both"
 
@@ -100,11 +110,15 @@ another device.
 
 One approval per device, remembered, and revocable:
 
+- It is given as a signed `approval` record naming the approved device id and the
+  range, sent to that device and to the devices that already hold an approval (so
+  a household of devices agrees without a second click, but a thief's device gets
+  nothing unless a human vouches for it).
 - It unlocks **back-fill** of the past within the chosen range.
-- It unlocks **mirroring of sent messages** from that point on. (Until approved,
-  a new device still receives incoming traffic — it cannot be stopped from doing
-  so — but it shows a banner: "receive-only: your history and sent messages are
-  not syncing yet".)
+- It unlocks **mirroring of sent messages** in both directions from that point
+  on. (Until approved, a new device still receives incoming traffic — it cannot
+  be stopped from doing so — but it shows "not approved": history and sent
+  messages are not syncing yet.)
 
 Mechanically: the approving device signs `(transfer_id, new_device_id, scopes)`
 with its device key and returns that as an `approval` record. Siblings accept
@@ -252,9 +266,9 @@ kept the plaintext; leaks the recovery to the peer and scales badly.
 
 | Phase | Work | Why in this order |
 |---|---|---|
-| 1 | Local attachment cache; **encrypted history export/import file** in both clients | Works today, no protocol change; is also the fallback when no other device is available, and the plumbing Phase 2 needs for attachments |
-| 2 | Device keys in the device list; `NKS1` framing; ECIES records; approval flow; **live mirroring** | Delivers the visible XMPP-like behaviour (sent on one device, seen on the other) |
-| 3 | Back-fill with the range picker (30/60/90/all, default 30), budget caps, progress, resume, approval UI in the Devices dialog | Turns mirroring into "restore and catch up" |
+| 1 | Local attachment cache; **encrypted history export/import file** in both clients — *done* | Works today, no protocol change; is also the fallback when no other device is available, and the plumbing Phase 2 needs for attachments |
+| 2 | Device key records; `NKS1` framing; ECIES records; approval flow; **live mirroring** — *done* | Delivers the visible XMPP-like behaviour (sent on one device, seen on the other) |
+| 3 | Back-fill with the range picker (30/60/90/all, default 30), budget caps, approval UI in the Devices dialog — *done* | Turns mirroring into "restore and catch up" |
 | 4 | (Optional, recommended against) relay-hosted escrow log with per-device key wrapping | Only if "restore with no other device online" ever outweighs the loss of forward secrecy |
 
 ## 8. Test plan
@@ -276,11 +290,17 @@ kept the plaintext; leaks the recovery to the peer and scales badly.
 - **Interop**: Python↔web in both directions, including a carbon and an
   attachment, so the format is pinned like the rest of the protocol.
 
-## 9. Remaining decisions
+## 9. Decisions, as built
 
-1. Range picker defaults are set (30 days; 30/60/90/all). Confirm the labels.
-2. Attachment budget default: 100 MB per sync, or smaller for the web (IndexedDB
-   quotas are tighter than a desktop disk)?
-3. Should a device be able to mirror to siblings *without* approval once it is in
-   the list, or only after an existing device approves it? (This plan says
-   approval-gated, on the reasoning in §4.3.)
+1. **Approval-gated** for both back-fill and mirroring. A device that a human has
+   not approved receives neither, while still receiving new incoming traffic.
+2. **Range picker**: last 30 days by default, with 30 / 60 / 90 / everything.
+3. **Attachments included**, capped at 100 MB per transfer on the desktop and
+   1 GB of local cache in the browser, oldest evicted first. Anything over budget
+   is reported ("3 attachment(s) not included") rather than silently missing.
+4. **No relay escrow.** The export file covers "no other device is available".
+
+Known limits, stated rather than hidden: a transfer needs the source device to be
+online at some point after the approval; an interrupted transfer is resumed by
+asking again (the merge is idempotent); and a device that was never approved sees
+the account's future traffic, because that is what holding the seed means.

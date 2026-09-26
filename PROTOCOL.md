@@ -406,9 +406,99 @@ in the contact card, exactly as in v1 of this specification.
 
 ---
 
-## 10. Versioning
+## 10. Device channel (sync between your own devices)
 
-`v` appears in the card, wire message, bundle, device list and envelope. A
+Two devices of one account talk to each other through their mailboxes, sealed so
+that neither the relay nor any contact can read it. Record types (§10.2) carry
+live mirrors of what you send, approved back-fill of the past, device sync keys
+and approvals.
+
+### 10.1 Device key record
+
+```
+record_address = b64( SHA-256( b"nk/devices/v1/keys" || isign || idh || device_id )[0:16] )
+```
+
+```json
+{
+  "v": 1,
+  "account": "26-char identity id",
+  "isign": "b64(32)",
+  "idh": "b64(32)",
+  "device": "b64(16)",
+  "sdev": "b64(32)",      // device Ed25519 public key
+  "sagree": "b64(32)",    // device X25519 public key
+  "bundle_id": "<record_address>",
+  "sig": "b64(64)"
+}
+```
+
+`sig` = `Ed25519(IK_sign, b"nk/devices/v1/keys/sig" || JSONc(payload without "sig"))`.
+The record is sealed and stored exactly like a device list (§9). It is kept out of
+the device list on purpose: a device list is re-serialised from its own fields by
+whoever parses it, so an added field would invalidate the list's signature for
+clients that do not know it.
+
+### 10.2 Record framing
+
+```
+"NKS1" | u8 version | u8 kind | u16 reserved | u32 header length | JSONc header | payload
+```
+
+| kind | name | purpose |
+|---|---|---|
+| 1 | `request` | a device asks a sibling for history in a range |
+| 2 | `offer` | how many items a transfer will contain, and its range |
+| 3 | `item` | one contact, message or attachment chunk |
+| 4 | `complete` | item count and the hash chain, so truncation is detectable |
+| 5 | `approval` | a human approved a device, with a range |
+| 6 | `mirror` | one sent message, or one read/delivered state change |
+
+### 10.3 Sealing
+
+EcIes, one transfer per approval:
+
+```
+e            = ephemeral X25519 keypair
+shared       = X25519(e_private, recipient.sagree)
+transfer_key = HKDF-SHA256(shared, salt = transfer_id, info = b"nk/devices/v1/sync", 32)
+item_key(i)  = HKDF-SHA256(transfer_key, salt = "", info = b"nk/devices/v1/sync/item" || u32(i), 32)
+```
+
+The header — `{v, transfer, from, eph, ts, seq, sig}` plus any per-kind fields —
+is signed by the sender's device key, and `JSONc(header)` is the AEAD associated
+data for every item. Ordering, integrity and non-repudiation inside the account
+are therefore all covered: a record cannot be re-ordered (the item index is in
+the key label and the header), spliced between transfers (the transfer id is the
+HKDF salt), or re-attributed (`from` is signed and must match the device key that
+signed it).
+
+A receiver accepts a record only from a device in its own last-known
+account-signed device list, whose key record verifies. Anything else is ignored.
+
+### 10.4 Completeness
+
+Items are merged as they arrive — the merge is idempotent, so a resumed transfer
+is harmless — while a running hash chain accumulates `SHA-256(prev || u32(seq) ||
+item_bytes)`. `complete` carries the final digest and the item count, so a
+receiver can tell "the transfer finished" from "the relay dropped the tail", and
+say so instead of pretending.
+
+### 10.5 Approvals and who may send
+
+A device sends mirrors or history **only to devices a human on that device
+approved**. Receiving is not a security boundary: every device of the account is
+entitled to the account's traffic, and a forged record fails its signature or its
+AEAD. An approval is a signed `approval` record naming the requester and the
+range; it is sent to the requester and to already-approved devices, so one click
+covers a household of devices while a stolen seed still buys nothing.
+
+---
+
+## 11. Versioning
+
+`v` appears in the card, wire message, bundle, device list, device key record,
+device channel record and envelope. A
 receiver rejects unknown major versions. Additive fields are ignored; semantics
 changes bump `v`. The relay stores blobs opaquely and never parses them, so
 protocol evolution does not require relay upgrades.
