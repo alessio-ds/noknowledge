@@ -552,3 +552,104 @@ def test_switching_identity_is_cancellable(qapp, tmp_path, monkeypatch):
         assert identity.identity_id  # the old identity is only signed out, not deleted
     finally:
         window.close()
+
+
+# -- history files ---------------------------------------------------------
+
+
+def _drain_worker(window, timeout: float = 30.0) -> None:
+    """Wait for queued worker tasks to finish (the queue is FIFO)."""
+    done = threading.Event()
+    window.worker.submit("test-noop", lambda: done.set())
+    assert done.wait(timeout), "worker did not drain"
+
+
+def _patch_file_dialogs(monkeypatch, saved_to=None, opened=None, answer=None):
+    from PyQt5.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+
+    from noknowledge.gui import app as app_mod
+
+    monkeypatch.setattr(app_mod, "ask_range", lambda parent, title: None)
+    monkeypatch.setattr(
+        QInputDialog, "getText", staticmethod(lambda *a, **k: ("file-passphrase", True))
+    )
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: answer or QMessageBox.Yes)
+    )
+    if saved_to is not None:
+        monkeypatch.setattr(
+            QFileDialog,
+            "getSaveFileName",
+            staticmethod(lambda *a, **k: (str(saved_to), "noknowledge history (*.nkx)")),
+        )
+    if opened is not None:
+        monkeypatch.setattr(
+            QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(opened), ""))
+        )
+
+
+def test_gui_exports_history_to_an_encrypted_file(qapp, tmp_path, monkeypatch):
+    from noknowledge.core import history as history_mod
+
+    window, _ = _app_with_contacts(tmp_path, monkeypatch, [{"id": BOB_A, "nickname": "Bob"}])
+    try:
+        target = tmp_path / "out.nkx"
+        _patch_file_dialogs(monkeypatch, saved_to=target)
+
+        window.export_history()
+        _drain_worker(window)
+
+        assert target.exists()
+        data = target.read_bytes()
+        assert history_mod.is_history_file(data) is True
+        # The file is sealed: none of it is readable without the passphrase.
+        assert b"Bob" not in data
+        assert history_mod.read_export_header(data)["counts"]["contacts"] == 1
+    finally:
+        window.close()
+
+
+def test_gui_imports_history_and_merges_messages(qapp, tmp_path, monkeypatch):
+    from noknowledge.core import history as history_mod
+    from noknowledge.core.client import Client
+    from noknowledge.core.store import LocalStore
+    from noknowledge.crypto.identity import Identity
+
+    window, identity = _app_with_contacts(
+        tmp_path, monkeypatch, [{"id": BOB_A, "nickname": "Bob"}]
+    )
+    try:
+        # A bundle from "another device": same contact, one message it has.
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        store = LocalStore(str(source_dir / "local.db"), key=os.urandom(32))
+        store.initialize()
+        source = Client(Identity.generate("source")[0], store, ["http://127.0.0.1:1"])
+        source.store.add_message(
+            {
+                "id": "m1",
+                "identity_id": source.identity_id,
+                "contact_id": BOB_A,
+                "direction": "received",
+                "type": "text",
+                "body": {"text": "from the other device"},
+                "remote_id": "env-9",
+                "ts": 1700000000000,
+                "state": "read",
+                "meta": None,
+            }
+        )
+        data = history_mod.export_history(source, "file-passphrase")
+        bundle = tmp_path / "in.nkx"
+        bundle.write_bytes(data)
+
+        _patch_file_dialogs(monkeypatch, opened=bundle)
+        window.import_history()
+        _drain_worker(window)
+
+        messages = window.client.messages(BOB_A)
+        assert [message["body"]["text"] for message in messages] == ["from the other device"]
+        assert window.identity is not None and window.identity.identity_id == identity.identity_id
+    finally:
+        window.close()

@@ -92,7 +92,22 @@ CREATE TABLE IF NOT EXISTS state (
     value_enc   BLOB NOT NULL,
     PRIMARY KEY (identity_id, key)
 );
+
+-- Attachment chunks we already hold the ciphertext for, so a downloaded file
+-- survives relay expiry and can be handed to another device when syncing
+-- history. The bytes are already AEAD-sealed for the recipient, so they need no
+-- second layer here.
+CREATE TABLE IF NOT EXISTS local_blobs (
+    chunk_id   TEXT PRIMARY KEY,
+    ciphertext BLOB NOT NULL,
+    size       INTEGER NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_local_blobs_age ON local_blobs (created_at);
 """
+
+#: Attachments kept locally before the oldest are dropped.
+LOCAL_BLOB_CAP_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def derive_key_from_passphrase(passphrase: str, salt: bytes, iterations: int = 600_000) -> bytes:
@@ -399,6 +414,19 @@ class LocalStore:
             row = connection.execute(query, params).fetchone()
             return self._message_from_row(row) if row else None
 
+    def list_all_messages(self, identity_id: str) -> list[dict]:
+        """Every message for an identity, across contacts.
+
+        History collection must not depend on a contact row existing: a bundle
+        that silently dropped messages would be worse than useless.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM messages WHERE identity_id = ? ORDER BY ts, id",
+                (identity_id,),
+            ).fetchall()
+        return [self._message_from_row(row) for row in rows]
+
     def update_message(self, message_id: str, **fields) -> None:
         if not fields:
             return
@@ -488,6 +516,70 @@ class LocalStore:
     def outbox_remove(self, entry_id: str) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM outbox WHERE id = ?", (entry_id,))
+
+    # -- local attachment cache -------------------------------------------
+
+    def put_local_blob(self, chunk_id: str, ciphertext: bytes) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO local_blobs (chunk_id, ciphertext, size, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (chunk_id) DO NOTHING
+                """,
+                (chunk_id, sqlite3.Binary(ciphertext), len(ciphertext), time.time()),
+            )
+        self.prune_local_blobs()
+
+    def get_local_blob(self, chunk_id: str) -> bytes | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT ciphertext FROM local_blobs WHERE chunk_id = ?", (chunk_id,)
+            ).fetchone()
+        return bytes(row["ciphertext"]) if row is not None else None
+
+    def has_local_blob(self, chunk_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM local_blobs WHERE chunk_id = ?", (chunk_id,)
+            ).fetchone()
+        return row is not None
+
+    def local_blob_count(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS total FROM local_blobs"
+            ).fetchone()
+        return int(row["total"])
+
+    def local_blob_bytes(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(SUM(size), 0) AS total FROM local_blobs"
+            ).fetchone()
+        return int(row["total"])
+
+    def prune_local_blobs(self, cap: int = LOCAL_BLOB_CAP_BYTES) -> int:
+        """Drop the oldest cached chunks until the cache fits ``cap``."""
+        dropped = 0
+        with self._connect() as connection:
+            total = int(
+                connection.execute(
+                    "SELECT COALESCE(SUM(size), 0) AS total FROM local_blobs"
+                ).fetchone()["total"]
+            )
+            while total > cap:
+                row = connection.execute(
+                    "SELECT chunk_id, size FROM local_blobs ORDER BY created_at LIMIT 1"
+                ).fetchone()
+                if row is None:
+                    break
+                connection.execute(
+                    "DELETE FROM local_blobs WHERE chunk_id = ?", (row["chunk_id"],)
+                )
+                total -= int(row["size"])
+                dropped += 1
+        return dropped
 
     def outbox_remove_for_message(self, message_id: str) -> None:
         """Clear every per-device row for one message (ids are ``msg:device``)."""

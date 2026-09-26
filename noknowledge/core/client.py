@@ -642,6 +642,13 @@ class Client:
             manifest["name"] = name
             manifest["mime"] = mime
             bodies[device.device_id] = {"caption": caption, "attachment": manifest}
+        # Keep our own copy under the manifest we recorded locally, so the file
+        # stays downloadable after the relay drops it and can travel with a
+        # history transfer to another device.
+        for entry, chunk in zip(
+            bodies[devices[0].device_id]["attachment"]["chunks"], attachment.chunks
+        ):
+            self.store.put_local_blob(str(entry["id"]), chunk.ciphertext)
 
         message_id = _new_id()
         blobs = self._fan_out(
@@ -940,9 +947,13 @@ class Client:
             raise AttachmentError("message has no attachment")
         key, chunk_ids, nonces, expected_hash = decode_manifest(manifest)
         assert self._own_inbox is not None
-        ciphertexts = [
-            self.backend.get_blob(self._own_inbox, chunk_id) for chunk_id in chunk_ids
-        ]
+        ciphertexts = []
+        for chunk_id in chunk_ids:
+            cached = self.store.get_local_blob(chunk_id)
+            if cached is None:
+                cached = self.backend.get_blob(self._own_inbox, chunk_id)
+                self.store.put_local_blob(chunk_id, cached)
+            ciphertexts.append(cached)
         return decrypt_attachment(key, nonces, ciphertexts, expected_hash)
 
     def close(self) -> None:

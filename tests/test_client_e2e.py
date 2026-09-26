@@ -302,3 +302,34 @@ def test_file_transfer_across_relays(tmp_path):
     finally:
         relay_a.stop()
         relay_b.stop()
+
+def test_attachment_served_from_the_local_cache(tmp_path, relay):
+    """A file we sent must stay downloadable after the relay drops the chunks.
+
+    Attachments live in a mailbox and are subject to relay TTL and quota; the
+    sending device keeps its own ciphertext copy so the message does not rot.
+    """
+    alice = make_client(tmp_path, "alice", [relay.url])
+    bob = make_client(tmp_path, "bob", [relay.url])
+    alice.provision()
+    bob.provision()
+    alice.add_contact(bob.card_string(), nickname="Bob")
+
+    source = tmp_path / "keep.bin"
+    source.write_bytes(os.urandom(50_000))
+    alice.send_file(bob.identity_id, str(source))
+
+    received = bob.sync()[0]
+    payload = bob.download_attachment(received)
+
+    # Now destroy every chunk on the relay, as expiry eventually would.
+    connection = sqlite3.connect(relay.db_path)
+    try:
+        connection.execute("DELETE FROM blobs")
+        connection.commit()
+    finally:
+        connection.close()
+
+    # Both sides still have the file: each cached the ciphertext locally.
+    assert alice.download_attachment(alice.messages(bob.identity_id)[0]) == payload
+    assert bob.download_attachment(received) == payload

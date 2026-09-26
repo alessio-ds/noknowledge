@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 import os
 import sys
+import time
 from collections import Counter
 
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -37,6 +38,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from noknowledge.core import history as history_mod
 from noknowledge.crypto.identity import Identity, IdentityError
 from noknowledge.gui.session import build_client, identity_is_encrypted, identity_path
 from noknowledge.gui.settings import GuiSettings, data_dir
@@ -81,6 +83,33 @@ class AddContactDialog(QDialog):
 
     def values(self) -> tuple[str, str]:
         return self.card.toPlainText().strip(), self.nickname.text().strip()
+
+
+#: Time windows offered for history export and device back-fill.
+RANGE_CHOICES = [
+    ("Last 30 days", 30),
+    ("Last 60 days", 60),
+    ("Last 90 days", 90),
+    ("Everything", None),
+]
+
+
+def ask_range(parent, title: str) -> int | None | bool:
+    """Ask how far back to go.
+
+    Returns milliseconds-since-epoch for a bounded window, ``None`` for
+    everything, or ``False`` when the user cancels.
+    """
+    labels = [label for label, _ in RANGE_CHOICES]
+    choice, ok = QInputDialog.getItem(
+        parent, title, "How much history?", labels, 0, False
+    )
+    if not ok:
+        return False
+    days = dict(RANGE_CHOICES)[choice]
+    if days is None:
+        return None
+    return int((time.time() - days * 24 * 3600) * 1000)
 
 
 def qr_pixmap(text: str, target: int = 300) -> QPixmap | None:
@@ -148,11 +177,17 @@ class DevicesDialog(QDialog):
     """The devices that share this account, as advertised to senders."""
 
     def __init__(
-        self, devices: list, parent=None, current_device_id: str | None = None
+        self,
+        devices: list,
+        parent=None,
+        current_device_id: str | None = None,
+        app=None,
+        cache_bytes: int = 0,
+        cache_chunks: int = 0,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("My devices")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
@@ -174,10 +209,35 @@ class DevicesDialog(QDialog):
         layout.addWidget(listing)
         layout.addWidget(
             QLabel(
-                "History is not synced: a newly added device sees messages sent\n"
-                "after it joined."
+                "History is not synced automatically: a newly added device sees\n"
+                "messages sent after it joined, plus whatever you hand it below."
             )
         )
+
+        if app is not None:
+            layout.addWidget(QLabel("History"))
+            self.cache = QLabel(
+                f"{cache_chunks} attachment chunk(s) cached locally "
+                f"({cache_bytes / (1024 * 1024):.1f} MB)"
+            )
+            self.cache.setObjectName("subtitle")
+            layout.addWidget(self.cache)
+            row = QHBoxLayout()
+            export = QPushButton("Export history…")
+            export.clicked.connect(app.export_history)
+            import_button = QPushButton("Import history…")
+            import_button.clicked.connect(app.import_history)
+            row.addWidget(export)
+            row.addWidget(import_button)
+            layout.addLayout(row)
+            layout.addWidget(
+                QLabel(
+                    "The file is encrypted with a passphrase you choose, and carries\n"
+                    "contacts, messages and any attachments cached here. Importing\n"
+                    "merges it into this device without creating duplicates."
+                )
+            )
+
         layout.addWidget(QDialogButtonBox(QDialogButtonBox.Close, rejected=self.reject))
 
 
@@ -551,6 +611,7 @@ class MainScreen(QWidget):
 
 class App(QWidget):
     attachment_ready = pyqtSignal(str, object)
+    history_done = pyqtSignal(str, object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -605,6 +666,7 @@ class App(QWidget):
         self.unlock.unlocked.connect(self._on_unlock)
         self.unlock.switch_requested.connect(self.switch_identity)
         self.attachment_ready.connect(self._save_attachment)
+        self.history_done.connect(self._history_finished)
         self.lock_shortcut = QShortcut(QKeySequence("Ctrl+L"), self)
         self.lock_shortcut.activated.connect(self.lock)
 
@@ -786,7 +848,132 @@ class App(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Devices", str(exc))
             return
-        DevicesDialog(devices, self, self.client.device_id()).exec_()
+        DevicesDialog(
+            devices,
+            self,
+            self.client.device_id(),
+            app=self,
+            cache_bytes=self.client.store.local_blob_bytes(),
+            cache_chunks=self._cached_chunk_count(),
+        ).exec_()
+
+    def _cached_chunk_count(self) -> int:
+        return self.client.store.local_blob_count()
+
+    # -- history files ----------------------------------------------------
+
+    def export_history(self) -> None:
+        """Write an encrypted copy of this device's history to a file."""
+        if self.client is None or self.worker is None:
+            return
+        since = ask_range(self, "Export history")
+        if since is False:
+            return
+        passphrase, ok = QInputDialog.getText(
+            self,
+            "Export history",
+            "Passphrase for the file (you will need it to import):\n"
+            "Lose it and the file cannot be opened — there is no recovery.",
+            QLineEdit.Password,
+        )
+        if not ok or not passphrase:
+            return
+        stamp = time.strftime("%Y%m%d")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save history", f"noknowledge-history-{stamp}.nkx", "noknowledge history (*.nkx)"
+        )
+        if not path:
+            return
+        self.main_screen.set_status("exporting history…")
+        self.worker.submit(
+            "export_history",
+            self._export_history_to,
+            path,
+            passphrase,
+            since,
+            callback=lambda result: self.history_done.emit("export", result),
+        )
+
+    def _export_history_to(self, path: str, passphrase: str, since_ms) -> dict:
+        data = history_mod.export_history(self.client, passphrase, since_ms=since_ms)
+        with open(path, "wb") as handle:
+            handle.write(data)
+        header = history_mod.read_export_header(data)
+        return {"path": path, "bytes": len(data), "counts": header["counts"]}
+
+    def import_history(self) -> None:
+        """Merge an exported history file into this device."""
+        if self.client is None or self.worker is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open history", "", "noknowledge history (*.nkx);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "rb") as handle:
+                preview = history_mod.read_export_header(handle.read())
+        except Exception as exc:
+            QMessageBox.warning(self, "Import history", str(exc))
+            return
+        counts = preview["counts"]
+        answer = QMessageBox.question(
+            self,
+            "Import history",
+            f"This file holds {counts['messages']} message(s), {counts['contacts']} "
+            f"contact(s) and {counts['chunks']} attachment chunk(s)\n"
+            f"({counts['skipped']} attachment(s) not included).\n\n"
+            "Merge it into this device?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        passphrase, ok = QInputDialog.getText(
+            self, "Import history", "Passphrase for this file:", QLineEdit.Password
+        )
+        if not ok or not passphrase:
+            return
+        self.main_screen.set_status("importing history…")
+        self.worker.submit(
+            "import_history",
+            self._import_history_from,
+            path,
+            passphrase,
+            callback=lambda result: self.history_done.emit("import", result),
+        )
+
+    def _import_history_from(self, path: str, passphrase: str) -> dict:
+        with open(path, "rb") as handle:
+            data = handle.read()
+        return history_mod.import_history(self.client, data, passphrase)
+
+    def _history_finished(self, kind: str, result) -> None:
+        if result is None:
+            self.main_screen.set_status("offline")
+            return
+        if kind == "export":
+            self.main_screen.set_status(f"exported to {os.path.basename(result['path'])}")
+            QMessageBox.information(
+                self,
+                "Export history",
+                f"Wrote {result['bytes'] / 1024:.0f} KB to\n{result['path']}\n\n"
+                f"{result['counts']['messages']} message(s), "
+                f"{result['counts']['chunks']} attachment chunk(s).",
+            )
+        else:
+            self.main_screen.set_status(
+                f"imported {result['messages']} message(s)"
+            )
+            QMessageBox.information(
+                self,
+                "Import history",
+                f"Merged {result['messages']} new message(s), "
+                f"{result['contacts']} contact(s) and "
+                f"{result['chunks']} attachment chunk(s).\n\n"
+                "Anything already here was left untouched.",
+            )
+            self.refresh()
 
     def copy_identity_id(self) -> None:
         """Copy your identity ID, for verifying yourself with a contact."""

@@ -58,3 +58,41 @@ def test_local_store_encrypts_at_rest(tmp_path):
 
     assert store.get_message("m1")["body"]["text"] == "TOPSECRET-MARKER"
     assert store.get_state("id", "inbox")["token"] == "TOPSECRET-MARKER"
+
+# -- local attachment cache ------------------------------------------------
+
+
+def _store(tmp_path) -> LocalStore:
+    store = LocalStore(str(tmp_path / "local.db"), key=os.urandom(32))
+    store.initialize()
+    return store
+
+
+def test_local_blob_cache_roundtrip(tmp_path):
+    store = _store(tmp_path)
+    assert store.has_local_blob("chunk-1") is False
+    assert store.get_local_blob("chunk-1") is None
+
+    store.put_local_blob("chunk-1", b"ciphertext")
+
+    assert store.has_local_blob("chunk-1") is True
+    assert store.get_local_blob("chunk-1") == b"ciphertext"
+    assert store.local_blob_bytes() == len(b"ciphertext")
+    # Re-putting the same chunk must not duplicate it.
+    store.put_local_blob("chunk-1", b"other")
+    assert store.get_local_blob("chunk-1") == b"ciphertext"
+
+
+def test_local_blob_cache_prunes_oldest(tmp_path):
+    store = _store(tmp_path)
+    for index in range(5):
+        store.put_local_blob(f"chunk-{index}", b"x" * 100)
+    assert store.local_blob_bytes() == 500
+
+    dropped = store.prune_local_blobs(cap=250)
+
+    assert dropped == 3
+    assert store.local_blob_bytes() == 200
+    # The three oldest are gone, the newest two survive.
+    assert store.get_local_blob("chunk-0") is None
+    assert store.get_local_blob("chunk-4") == b"x" * 100
