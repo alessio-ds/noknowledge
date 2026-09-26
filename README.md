@@ -221,7 +221,8 @@ NK_DATA_DIR=/tmp/nk-alice-laptop NK_DISABLE_KEYRING=1 ./scripts/run_gui.sh
 
 **What does not come back:** message history. The seed restores your *identity*,
 not your logs — a newly added device receives everything sent after it joined,
-and history stays on the devices that already had it.
+and history stays on the devices that already had it. Moving it is a planned
+feature with a concrete design: see [`docs/HISTORY_SYNC.md`](docs/HISTORY_SYNC.md).
 
 ## Testing
 
@@ -270,6 +271,7 @@ uv.lock     pinned, reproducible environment
 | [`PROTOCOL.md`](PROTOCOL.md) | Wire format, crypto, handshake, ratchet, relay API |
 | [`THREAT_MODEL.md`](THREAT_MODEL.md) | Adversaries, guarantees, non-goals, verification plan |
 | [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) | Running and federating relays |
+| [`docs/HISTORY_SYNC.md`](docs/HISTORY_SYNC.md) | Design proposal for syncing history to a new device |
 
 ## Scope
 

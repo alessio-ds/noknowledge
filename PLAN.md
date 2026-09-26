@@ -26,7 +26,8 @@ Reference implementation for study only: `/Users/alessiodellasanta/Documents/pyz
 | Threat model | Server must not learn **content** or **sender↔recipient linkage**; timing/IP metadata is out of scope for v1 (but proxy support is in) |
 | Availability | Relays are **untrusted and replaceable**: replicated mailboxes across a configurable relay set + sender outbox with re-delivery (§8) |
 | Federation | **In v1**: any relay instance is a federated node; cards point at arbitrary relay URLs; no shared state, no central directory, no inter-relay trust |
-| Out of scope v1 | Group chats, history sync across devices, public lookup directory, full P2P/DHT |
+| History sync | **Planned, not built**: device-to-device transfer of plaintext history over an approval-gated ECIES channel — see [`docs/HISTORY_SYNC.md`](docs/HISTORY_SYNC.md) |
+| Out of scope v1 | Group chats, public lookup directory, full P2P/DHT |
 
 ---
 
